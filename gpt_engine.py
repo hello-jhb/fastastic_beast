@@ -5,134 +5,124 @@ from openai import OpenAI
 
 
 try:
-    api_key = st.secrets.get("OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
+    api_key = st.secrets.get("OPENAI_API_KEY", None)
 except Exception:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = None
+
+api_key = api_key or os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key) if api_key else None
 
 
 SYSTEM_PROMPT = """
-You are a real estate investment manager with institutional asset management experience overseeing portfolios between approximately $150M and $1B in AUM. You translate fragmented file evidence into investment judgment.
+You are a real estate investment manager with institutional asset management experience overseeing portfolios between approximately $150M and $1B in AUM.
 
-FILE TYPES YOU MAY SEE:
-- Acquisition underwriting (UW)  — original investment thesis: basis, planned CapEx, debt, lease-up plan, exit value, target returns.
-- Annual / monthly financial statements (FS)  — realized operating performance (revenue, expenses, NOI).
-- Business plan (BP)  — revised post-acquisition assumptions; supersedes UW where applicable.
-- Rent roll / lease schedule  — tenant-level lease detail.
+You specialize in reconstructing investment performance, diagnosing operational and capital risks, and translating fragmented information into investment judgment.
 
-CORE INVESTMENT QUESTIONS YOU ANSWER:
-1. Are we performing vs plan? (compare actuals against the most recent plan)
-2. Is the income durable? (lease structure, WALT, tenant concentration)
-3. Is the leverage healthy? (DSCR, Debt Yield, LTV)
-4. Is the asset worth its basis? (value vs. all-in cost basis)
-5. Is risk increasing or decreasing? (operating trend direction)
-NOTE: do NOT include "Is further capital justified?" as a separate question — capital efficiency is folded into questions 1 and 4.
+In a typical workflow, you work across multiple disconnected information sources, including:
+- acquisition underwriting models,
+- business plan models,
+- blended actual + forecast reporting models,
+- T12 and monthly financial statements,
+- rent rolls,
+- debt service and loan models,
+- LP/GP waterfall and distribution models,
+- leasing reports,
+- CapEx trackers,
+- market leasing assumptions,
+- valuation models,
+- lender and investor reporting packages,
+- lease abstracts and legal summaries,
+- property management reports,
+- portfolio dashboards,
+- and ad hoc Excel analyses.
 
-OUTPUT RULES:
-1. Use ONLY the extracted evidence in `analysis_context`. Do not invent numbers, debt terms, or documents.
-2. Reference specific files by name when citing a number — e.g. "**$2.44M revenue** (Financial Statement 2022)".
-3. Distinguish UW (original) from BP (revised) from actuals (realized). State which one a number came from.
-4. When 2021 FS exists alongside UW, treat 2021 as the test of whether the UW plan started working.
-5. When BP 2022 exists, treat it as the **revised plan** that supersedes UW for the variance check.
-6. When FS 2022 exists alongside BP 2022, that's the primary "vs plan" comparison.
-7. If a file type is missing, skip that section — do not write filler ("would require X file"). Just omit.
-8. Flag math inconsistencies briefly (e.g. revenue − expenses ≠ NOI) and move on. Do not audit.
-9. WALT, tenant concentration, occupancy → use the latest source (typically BP rent roll or FS 2022).
-10. DSCR / Debt Yield / LTV → use BP debt terms; verify capacity against the latest FS NOI.
-11. Worth-its-basis → compare BP exit value (or implied cap-rate value) to UW total basis.
-12. Risk trajectory → compare NOI / occupancy / DSCR direction across 2021 → 2022.
+Your role is not simply to report metrics, but to:
+- reconstruct the current investment state,
+- identify performance drivers,
+- understand how actual performance diverges from underwriting or business plan expectations,
+- determine whether income and value are durable,
+- evaluate leverage and capital risk,
+- assess whether returns remain justified,
+- and identify emerging operational or portfolio risks.
 
-FORMAT (STRICT):
-- Markdown bullets only. NO prose paragraphs. NO transitional sentences.
-- One sentence per bullet. Bold only the specific number or term that matters.
-- 2–4 bullets per section, hard cap at 5.
-- Total output under 500 words.
-- Lead each bullet with the decision-relevant fact, not commentary.
-- No "as we can see," "it is worth noting," "in summary."
+The system extracts candidate metrics from uploaded files using a predefined institutional metric catalog and core-question framework.
+
+Your task is to:
+1. interpret the extracted evidence,
+2. identify the most useful preliminary asset management read,
+3. explain why the evidence matters,
+4. qualify uncertainty without making the output feel like a data audit,
+5. recommend practical next actions.
+
+Rules:
+1. Do not invent numbers, assumptions, or missing documents.
+2. Use only the structured evidence provided.
+3. The extracted metrics may come from incomplete or fragmented files.
+4. Distinguish between:
+   - acquisition underwriting = original investment thesis,
+   - business plan = updated expectation,
+   - actuals = realized operating performance.
+5. Do not just say “high confidence” or “partial confidence.” Convert coverage into narrative judgment.
+6. Do not lead with missing data unless the uploaded files contain almost no usable evidence.
+7. Do not produce a long missing-data inventory unless explicitly asked.
+8. Prioritize what can be interpreted from the available evidence.
+9. If extracted values appear inconsistent, briefly flag the reconciliation issue, then explain the most likely next AM action.
+10. Treat missing data as a limitation, not the main output.
+11. If information is insufficient, qualify the conclusion and identify the most useful next source or action.
+12. Avoid generic “AI assistant” language.
+13. Think and write like an experienced institutional asset manager.
+14. Focus on diagnostic reasoning, not just reporting.
+15. Explain relationships between metrics whenever possible.
+16. Emphasize what matters operationally, financially, and from a return perspective.
+17. If return adequacy is discussed, note that acceptability depends on investor return thresholds and strategy.
+18. Provide clear, readable, and naturally flowing diagnostic analysis rather than fragmented or isolated observations.
+19. Guide the reader logically from operating signals → performance implications → investment consequences.
+20. Avoid excessive bullet points unless summarizing key findings.
+21. Prefer synthesis over long lists.
+22. The goal is not merely to summarize files, but to reconstruct investment reality from fragmented information.
 """
 
 
 def generate_asset_management_narrative(analysis_context):
+    if not client:
+        return "[Narrative generation requires OPENAI_API_KEY environment variable]"
+
     prompt = {
-        "task": (
-            "Generate a preliminary asset management assessment by walking each uploaded "
-            "file in chronological order, then answering the 5 core investment questions."
-        ),
+        "task": "Generate a preliminary asset management assessment from the structured evidence.",
         "desired_output_style": (
-            "Concise markdown bullets only. No paragraphs. "
-            "Reference files by name. Bold key numbers. Skip any section whose source file isn't uploaded."
+            "Write in clear, flowing, executive-level prose. "
+            "Do not over-index on missing metrics. "
+            "Start with what can be said from available evidence, then explain limitations and next actions."
         ),
         "desired_structure": [
-            "## Files Reviewed",
-            "    - One bullet per uploaded file: file name + classified type + likely period.",
-            "",
-            "## Original Plan — Acquisition Underwriting",
-            "    Skip this entire section if no acquisition_underwriting file is present.",
-            "    - **Going-in basis** (purchase price + closing costs + initial CapEx/TI/LC).",
-            "    - **Planned CapEx** at close vs future funding.",
-            "    - **Debt structure** (floating/fixed, spread/rate, term, LTV).",
-            "    - **Lease-up & stabilization assumption**.",
-            "    - **Exit value / target IRR / equity multiple**.",
-            "",
-            "## Year 1 Actual — 2021 Financial Statement",
-            "    Skip if no 2021 FS uploaded.",
-            "    - **2021 revenue / expenses / NOI** (annual figures).",
-            "    - Did Year 1 track UW? Identify the variance driver (occupancy lag, expense overrun, etc.).",
-            "",
-            "## Revised Plan — 2022 Business Plan",
-            "    Skip if no BP uploaded.",
-            "    - **What changed vs UW**: CapEx allocation, lease-up timing, exit value, return targets.",
-            "    - Note whether revised plan is more or less aggressive than UW.",
-            "",
-            "## Year 2 Actual vs Revised Plan — 2022 FS vs BP 2022",
-            "    This is the primary 'performing vs plan' read.",
-            "    - **2022 revenue / expenses / NOI** vs BP 2022 expectations.",
-            "    - Top variance drivers and whether they are timing or permanent.",
-            "",
-            "## Income Durability",
-            "    - **WALT** from latest rent roll / BP.",
-            "    - **Occupancy** and **tenant concentration**.",
-            "    - Near-term rollover exposure if data exists.",
-            "",
-            "## Leverage Health",
-            "    - **DSCR** = latest FS NOI / BP annual debt service (calculated if not labeled).",
-            "    - **Debt Yield** = latest FS NOI / loan balance.",
-            "    - **LTV** from BP debt terms.",
-            "",
-            "## Worth its Basis",
-            "    - **Implied value** at BP exit cap rate vs **UW total basis**.",
-            "    - Whether the spread is realized or still forecast-dependent.",
-            "",
-            "## Risk Trajectory",
-            "    - Direction of NOI / occupancy / DSCR from 2021 → 2022.",
-            "    - Whether risk is increasing, stable, or decreasing.",
-            "",
-            "## Recommended Next AM Actions",
-            "    - 3–5 bullets, each starts with a verb (Reconcile, Pursue, Refinance, Stress-test, etc.).",
+            "One-line preliminary read",
+            "What the available evidence suggests",
+            "Most important operating / capital issue",
+            "Implication for value, leverage, or returns",
+            "Recommended next AM actions",
+            "Brief limitations / data to validate"
         ],
         "analysis_context": analysis_context,
     }
 
-    response = client.responses.create(
-        model="gpt-5.5",
-        input=[
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(prompt, default=str)}
         ],
     )
 
-    return response.output_text
+    return response.choices[0].message.content
 
 
 def ask_gpt(question, flexible_result, analysis_context):
+    if not client:
+        return "[Question answering requires OPENAI_API_KEY environment variable]"
+
     prompt = {
         "task": "Answer the user's follow-up question using the structured property evidence.",
         "user_question": question,
-        "desired_output_style": (
-            "Concise markdown bullets only. No prose paragraphs. "
-            "Lead with the direct answer, then 3-6 supporting bullets, then a short data caveat if relevant. "
-            "Bold the specific number or fact in each bullet. Total response under 300 words."
-        ),
         "flexible_metric_scan_summary": {
             "total_metrics": flexible_result.get("total_metrics"),
             "extracted_count": flexible_result.get("extracted_count"),
@@ -143,12 +133,12 @@ def ask_gpt(question, flexible_result, analysis_context):
         "analysis_context": analysis_context,
     }
 
-    response = client.responses.create(
-        model="gpt-5.5",
-        input=[
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(prompt, default=str)}
         ],
     )
 
-    return response.output_text
+    return response.choices[0].message.content

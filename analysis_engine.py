@@ -90,8 +90,7 @@ def relationship_check(metrics):
         ),
         "capex_source_present": has_layer_signal(
             metrics,
-            ["capex", "capital", "cost to complete", "renovation",
-             "ti/lc", "ti lc", "tenant improvement", "leasing commission"]
+            ["capex", "capital", "cost to complete", "renovation"]
         ),
     }
 
@@ -111,14 +110,11 @@ def relationship_check(metrics):
         "debt_service": has_metric(metrics, ["debt service", "loan payment", "principal and interest"]),
         "debt_balance": has_metric(metrics, ["debt balance", "loan balance", "outstanding debt"]),
 
-        "capex": has_metric(metrics, ["capex", "capital expenditure", "capital cost", "capital costs",
-                                       "ti/lc", "ti lc", "tenant improvement", "leasing commission",
-                                       "capex / ti/lc"]),
-        "capex_roi": has_metric(metrics, ["capex roi", "return on capex", "roi on capex",
-                                          "return on capital", "roi on capex / ti/lc"]),
-        "yield_on_cost": has_metric(metrics, ["yield on cost", "yield on incremental cost"]),
-        "incremental_noi": has_metric(metrics, ["incremental noi", "yield on incremental"]),
-        "cost_to_complete": has_metric(metrics, ["cost to complete", "remaining cost", "capex remaining"]),
+        "capex": has_metric(metrics, ["capex", "capital expenditure", "capital cost", "capital costs"]),
+        "capex_roi": has_metric(metrics, ["capex roi", "return on capex"]),
+        "yield_on_cost": has_metric(metrics, ["yield on cost"]),
+        "incremental_noi": has_metric(metrics, ["incremental noi"]),
+        "cost_to_complete": has_metric(metrics, ["cost to complete", "remaining cost"]),
 
         "basis": has_metric(metrics, ["basis", "cost basis", "total basis", "purchase price", "acquisition price"]),
         "value": has_metric(metrics, ["value", "valuation", "market value", "implied value"]),
@@ -321,8 +317,53 @@ def core_question_coverage(flexible_result):
     ))
 
     # ---------------------------------------------------
-    # 4. Is the asset worth its basis?
-    # (Capital-justification check folded into Q1 and Q4 per investment-review framework)
+    # 4. Is further capital justified?
+    # ---------------------------------------------------
+    required = [
+        "CapEx",
+        "CapEx ROI",
+        "Yield on Cost",
+        "Incremental NOI",
+        "Cost to Complete",
+    ]
+
+    available = [
+        "CapEx" if m.get("capex", False) else None,
+        "CapEx ROI" if m.get("capex_roi", False) else None,
+        "Yield on Cost" if m.get("yield_on_cost", False) else None,
+        "Incremental NOI" if m.get("incremental_noi", False) else None,
+        "Cost to Complete" if m.get("cost_to_complete", False) else None,
+    ]
+
+    relationship_met = (
+        m.get("capex", False)
+        and (
+            m.get("incremental_noi", False)
+            or m.get("capex_roi", False)
+            or m.get("yield_on_cost", False)
+            or m.get("cost_to_complete", False)
+        )
+    )
+
+    limitations = []
+    if not m.get("capex", False):
+        limitations.append("CapEx spend or budget was not detected.")
+    if not relationship_met:
+        limitations.append(
+            "Capital justification requires linking capital spend to incremental NOI, yield on cost, or value creation."
+        )
+
+    results.append(assess_question(
+        "Is further capital justified?",
+        required,
+        available,
+        relationship_required=True,
+        relationship_met=relationship_met,
+        limitations=limitations,
+    ))
+
+    # ---------------------------------------------------
+    # 5. Is the asset worth its basis?
     # ---------------------------------------------------
     required = [
         "Basis",

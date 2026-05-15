@@ -83,7 +83,7 @@ def infer_layers(source_type, metric_name):
         layers.append("Leasing")
     if any(x in text for x in ["debt", "loan", "dscr", "ltv"]):
         layers.append("Debt")
-    if any(x in text for x in ["capex", "capital", "ti/lc", "tenant improvement", "leasing commission"]):
+    if any(x in text for x in ["capex", "capital"]):
         layers.append("CapEx")
 
     return layers or ["General"]
@@ -102,9 +102,7 @@ def build_aliases(metric_name, aliases_text):
     if "noi" in lower or "net operating income" in lower:
         aliases += ["NOI", "Net Operating Income"]
 
-    # Revenue aliases — only for metrics that are actually revenue lines,
-    # NOT for NOI / Operating Income which also contains "income" in the name
-    if "revenue" in lower or "egi" in lower or "gross income" in lower:
+    if "revenue" in lower or "income" in lower:
         aliases += [
             "Revenue",
             "Total Revenue",
@@ -151,23 +149,11 @@ def build_aliases(metric_name, aliases_text):
     if "ltv" in lower:
         aliases += ["LTV", "Loan to Value"]
 
-    # Generic debt aliases only for non-specific debt metrics — "Debt Balance"
-    # should not be added to Debt Yield / DSCR / etc. since those name different things.
-    if ("loan amount" in lower or "loan balance" in lower or "debt amount" in lower
-            or "debt balance" in lower or "outstanding" in lower):
-        aliases += ["Loan Balance", "Debt Balance", "Outstanding Debt", "Loan Amount"]
+    if "debt" in lower or "loan" in lower:
+        aliases += ["Debt", "Loan", "Loan Amount", "Debt Balance"]
 
-    # CapEx aliases (capital-spend budgets / totals) — do NOT include TI/LC
-    # sub-category labels here, since those refer to different proforma rows
-    if "capex" in lower or "capital exp" in lower or "capital cost" in lower or "capital allocation" in lower:
-        aliases += ["CapEx", "Capital Expenditure", "Capital Costs", "Capital Allocation"]
-
-    # TI/LC aliases (tenant improvement / leasing commission specific)
-    if ("ti/lc" in lower or "ti / lc" in lower or "ti & lc" in lower or "ti and lc" in lower
-            or "tenant improvement" in lower or "leasing commission" in lower
-            or "ti per sf" in lower or "lc per sf" in lower):
-        aliases += ["TI/LC", "TI & LC", "Tenant Improvements", "Leasing Commissions",
-                    "TI per SF", "LC per SF"]
+    if "capex" in lower:
+        aliases += ["CapEx", "Capital Expenditure", "Capital Costs"]
 
     # Deduplicate while preserving order
     cleaned = []
