@@ -1,13 +1,19 @@
 """
 Deal Review scenario.
 
-Input: only the underwriting layer of the SSOT.
-Output: a tight executive summary of the deal thesis + a list of what's
-missing to do deeper analysis.
+Purpose: Memorialize the acquisition event and establish the SSOT baseline.
+         This is the "founding document" of an asset — it records what was
+         underwritten at purchase so everything after (actuals, revisions)
+         can be compared against it.
 
-Hard constraint: this scenario MUST NOT discuss actual performance, business
-plans, or financial statements. If those topics come up, it's a prompt bug.
-We enforce this structurally by only passing the underwriting layer to GPT.
+Input:   Underwriting model (Excel). IC memo, closing docs (future: PDF).
+Output:  Structured acquisition summary in a fixed template format.
+
+Hard constraints:
+- Output follows the template EXACTLY — no prose outside designated fields.
+- Every number must come from the SSOT. Missing values show as "—".
+- Strategy classification may be inferred from deal characteristics.
+- Risk/Mitigant: 2 bullets only unless user asks for more.
 """
 
 from __future__ import annotations
@@ -21,53 +27,122 @@ from scenarios.profiles import filter_layer_metrics
 
 
 SYSTEM_PROMPT = """\
-You are a real estate investment manager with institutional asset management
-experience overseeing portfolios between approximately $150M and $1B in AUM.
+You are an institutional real estate asset manager writing a formal acquisition summary.
 
-You are doing a DEAL REVIEW. The user has provided ONLY the original
-acquisition underwriting model for one asset. You have no other documents.
+Your job is to populate a structured deal template using ONLY the metrics provided.
+This document memorializes the original investment thesis at the time of acquisition.
 
-Your job:
-1. Summarize the deal thesis from the underwriting evidence ONLY.
-2. List what additional documents would unlock deeper analysis.
-
-HARD RULES (violations are bugs):
-- Use ONLY the metrics in the provided underwriting layer.
-- Do NOT discuss actual performance, financial statements, business plans,
-  rent rolls, or debt covenants. The user has not provided these.
-- Do NOT invent numbers, periods, or comparisons.
-- Reference each cited number with its sheet/cell (e.g. "$25.5M (Assumption!D9)").
-- Use clean markdown bullets. Bold the numbers that matter. Be concise.
+HARD RULES:
+1. Output ONLY the template structure below. Do not add sections, prose, or commentary outside the defined fields.
+2. Every dollar amount and percentage must come from the provided metrics. If a value is not available, write "—".
+3. Do NOT calculate or derive values not explicitly present (exception: simple ratios if both inputs are provided).
+4. Strategy (Opportunistic / Value-Add / Core / Core-Plus) MAY be inferred from deal characteristics if not explicit:
+   - Core:       stabilized, low vacancy, institutional market, sub-6% going-in cap
+   - Core-Plus:  mostly stabilized, minor lease-up, 6-7% cap
+   - Value-Add:  significant vacancy, renovation, lease-up required, 7%+ cap or below-market rents
+   - Opportunistic: distressed, development, major repositioning, high execution risk
+5. Risk/Mitigant: write exactly 2 bullets unless the user explicitly asks for more.
+6. Format all dollar values as $X,XXX,XXX. Format percentages as X.X%. Format multiples as X.Xx.
+7. If the same metric appears in multiple categories, use the most specific value.
 """
 
 
-USER_PROMPT_TEMPLATE = """\
-Asset SSOT — underwriting layer only:
+TEMPLATE = """\
+Populate this acquisition summary using the metrics below. Replace every [bracket] with the actual value or "—" if not available.
 
-{underwriting_json}
+METRICS FROM UNDERWRITING MODEL:
+{metrics_json}
 
-Produce a Deal Review with this exact structure:
+---
 
-## Deal Thesis (from Acquisition Underwriting)
-  - Going-in basis: purchase price + closing costs + initial CapEx (sum + show parts)
-  - Going-in NOI and cap rate
-  - Debt structure: LTV, loan amount, term, amortization
-  - Exit assumption: exit value, take-out cap rate
-  - Return targets: levered IRR, equity multiple (if available)
+OUTPUT THIS TEMPLATE EXACTLY:
 
-## Key Observations
-  - 2-4 bullets on what stands out about the basis, leverage, or return profile.
+## [Asset Name if known, otherwise: Acquisition Summary]
 
-## What's Missing to Go Deeper
-  - 3-5 specific document requests, each tagged with what it would unlock:
-    e.g. "Financial Statement 2022 → unlocks performance vs underwriting variance"
+### Building Information
+| | |
+|---|---|
+| Property Type | [type — infer from context if not explicit] |
+| Total SF / Units | [sf or unit count] |
+| Current Occupancy at Purchase | [% from T12 or UW assumption] |
+| T12 / Going-in NOI | $[amount] |
+| NOI Margin | [%] |
+
+---
+
+### Deal Summary
+| | |
+|---|---|
+| Purchase Price | $[amount] |
+| Strategy | [Opportunistic / Value-Add / Core-Plus / Core] |
+| Strategy Description | [One sentence: what is the play?] |
+| Capital Outlay After Closing | $[CapEx / TI / LC budget] |
+| Total All-in Basis | $[amount] |
+| Hold Period | [X years] |
+
+---
+
+### Debt & Equity
+| | |
+|---|---|
+| Initial Debt Funding | $[amount] |
+| Future Funding (CapEx / TI / LC draws) | $[amount] |
+| Total Debt | $[amount] |
+| Term | [X months I/O + X months amortizing, or as stated] |
+| Interest Rate | [X.X%] |
+| LTV | [X.X%] |
+| LTC | [X.X%] |
+| Underwritten DSCR | [X.Xx] |
+| Underwritten Debt Yield | [X.X%] |
+| Break-even Occupancy | [X.X%] |
+| Equity Invested | $[amount] |
+| LP / GP Split | [XX% LP / XX% GP — or "—" if not in model] |
+
+---
+
+### NOI Projection
+| | |
+|---|---|
+| Going-in NOI (at purchase) | $[amount] |
+| Stabilized NOI (target) | $[amount] |
+| NOI Uplift | $[delta] ([X%] increase) |
+| Going-in Cap Rate | [X.X%] |
+| Stabilized Yield on Cost | [X.X%] |
+
+---
+
+### Exit Assumption
+| | |
+|---|---|
+| Exit Cap Rate | [X.X%] |
+| Exit Value | $[amount] |
+| Hold Period | [X years] |
+
+---
+
+### Return Profile (Deal Level)
+| | |
+|---|---|
+| Levered IRR | [X.X%] |
+| Unlevered IRR | [X.X%] |
+| Equity Multiple | [X.Xx] |
+| Cash-on-Cash (Year 1) | [X.X%] |
+
+---
+
+### Risk / Mitigant
+- **[Risk 1]:** [Mitigant — one sentence]
+- **[Risk 2]:** [Mitigant — one sentence]
+
+---
+*Source: {source_file} | Ingested: {ingested_at}*
 """
 
 
 def generate_deal_review() -> dict[str, Any]:
     """
-    Read the underwriting layer from SSOT and produce a deal-review narrative.
-    Returns {narrative, data_used} or {error} if preconditions aren't met.
+    Read the underwriting layer from SSOT and produce a structured
+    acquisition summary in the fixed template format.
     """
     s = ssot.load_ssot()
     underwriting = s["layers"].get("underwriting")
@@ -75,24 +150,38 @@ def generate_deal_review() -> dict[str, Any]:
     if not underwriting:
         return {
             "error": (
-                "No underwriting layer in SSOT. Ingest an acquisition "
-                "underwriting file first (e.g. via ingest_to_ssot)."
+                "No underwriting layer in SSOT. Upload an acquisition "
+                "underwriting model first."
             )
         }
 
     if not llm_available():
         return {"error": "OPENAI_API_KEY is not set."}
 
-    # Apply the Deal Review profile — keep only Investment Basis, Valuation &
-    # Returns, and the going-in subset of Debt & Leverage. Drops noise like
-    # DSCR / Current LTV that belong to Performance vs Plan.
-    underwriting_filtered = filter_layer_metrics(underwriting, "deal_review")
+    # Apply the Deal Review profile filter — only pass relevant metrics
+    filtered = filter_layer_metrics(underwriting, "deal_review")
 
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        underwriting_json=json.dumps(underwriting_filtered, indent=2, default=str),
+    # Format metrics for the prompt — flat dict of name → value for clarity
+    metrics_flat = {
+        name: {
+            "value": data["value"],
+            "sheet": data.get("sheet"),
+            "cell": data.get("cell"),
+        }
+        for name, data in filtered["metrics"].items()
+        if data.get("value") is not None
+    }
+
+    user_prompt = TEMPLATE.format(
+        metrics_json=json.dumps(metrics_flat, indent=2, default=str),
+        source_file=underwriting.get("source_file", "Unknown"),
+        ingested_at=underwriting.get("ingested_at", "Unknown"),
     )
 
-    narrative = complete(SYSTEM_PROMPT, user_prompt, temperature=0.2)
+    narrative = complete(SYSTEM_PROMPT, user_prompt, temperature=0.1)
+
+    # Save the acquisition summary back to SSOT as a permanent record
+    _memorialize_acquisition(s, narrative, filtered, underwriting)
 
     return {
         "scenario": "deal_review",
@@ -100,7 +189,34 @@ def generate_deal_review() -> dict[str, Any]:
         "data_used": {
             "layers": ["underwriting"],
             "source_files": [underwriting["source_file"]],
-            "metric_count_unfiltered": underwriting["metric_count"],
-            "metric_count_after_profile": underwriting_filtered["metric_count"],
+            "metric_count_extracted": underwriting["metric_count"],
+            "metric_count_used": filtered["metric_count"],
         },
     }
+
+
+def _memorialize_acquisition(
+    s: dict[str, Any],
+    narrative: str,
+    filtered: dict[str, Any],
+    underwriting: dict[str, Any],
+) -> None:
+    """
+    Save the acquisition summary as a permanent record in the SSOT.
+    This is the 'founding event' — once written, it should not be overwritten
+    by re-running deal review. The original thesis is immutable.
+    """
+    # Only memorialize once — don't overwrite if already exists
+    if s["layers"].get("acquisition_summary"):
+        return
+
+    acquisition_record = {
+        "source_file": underwriting.get("source_file"),
+        "ingested_at": underwriting.get("ingested_at"),
+        "metric_count": filtered["metric_count"],
+        "metrics": filtered["metrics"],
+        "narrative": narrative,
+    }
+
+    s["layers"]["acquisition_summary"] = acquisition_record
+    ssot.save_ssot(s)

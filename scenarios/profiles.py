@@ -40,7 +40,8 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
             "Cash Flow": "all",           # projected waterfall from UW proforma
             "Valuation & Returns": "all",
             # Going-in debt only — Original LTV, term/rate, etc.
-            # NOT DSCR/Debt Yield (those are actual/current-state metrics).
+            # Going-in debt terms — includes projected DSCR and Debt Yield
+            # because these are UW requirements modeled at acquisition.
             "Debt & Leverage": {
                 "include_names": [
                     "Original LTV",
@@ -51,6 +52,10 @@ SCENARIO_PROFILES: dict[str, dict[str, Any]] = {
                     "Loan Balance",
                     "Debt Service Constant",
                     "Interest-Only Period Remaining",
+                    "DSCR / Debt Coverage Ratio",
+                    "Debt Yield",
+                    "Refinance DSCR",
+                    "Break-even Occupancy (Monthly)",
                 ],
             },
         },
