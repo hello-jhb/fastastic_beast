@@ -35,6 +35,11 @@ from flexible_extractor import (
 from metric_catalog import CATALOG_VERSION
 from metric_resolver import resolve_metric, make_cache_key, RESOLVER_VERSION
 from metric_fallback import fallback_find_metric, FALLBACK_VERSION
+from metric_resolver_gpt import (
+    resolve_pool_with_gpt,
+    run_identity_checks,
+    RESOLVER_GPT_VERSION,
+)
 import extraction_cache
 from scenarios._llm import run_raw_insight_pass, llm_available
 
@@ -376,15 +381,12 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
 
     bounded_metrics: dict[str, Any] = {}
     fallback_uses = 0
+    metrics_by_name: dict[str, dict] = {m["metric_name"]: m for m in bounded}
     for metric in bounded:
         cands = candidates_by_metric.get(metric["metric_id"], [])
         record = resolve_metric(metric, cands)
 
         # Phase 1.5b — GPT-as-reader fallback for zero-candidate cases.
-        # Only fires when:
-        #   (a) the metric has zero candidates (catalog truly missed it), AND
-        #   (b) the LLM is available, AND
-        #   (c) the metric has preferred_sheets defined (avoids unbounded scans).
         if (
             record["status"] == "missing"
             and llm_available()
@@ -393,14 +395,17 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
             fallback_cand = fallback_find_metric(metric, file_path, available_sheets)
             if fallback_cand:
                 fallback_uses += 1
-                # Re-resolve using the fallback candidate so schema validation still applies
                 record = resolve_metric(metric, [fallback_cand])
-                # Annotate where the value came from
                 record.setdefault("validation_notes", []).insert(
                     0,
                     f"Found via GPT fallback (catalog had 0 candidates). "
                     f"Reasoning: {fallback_cand.get('fallback_reasoning', '')[:140]}",
                 )
+
+        # Phase 2 — GPT resolver disambiguates candidate_pool with cell context.
+        # Skips internally if all candidates substantially agree.
+        if record["status"] == "candidate_pool" and llm_available():
+            record = resolve_pool_with_gpt(record, metric, file_path)
 
         # Trim candidate list to keep cache size sane — keep top 5 only
         record["candidates"] = record["candidates"][:5]
@@ -411,6 +416,26 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
             "BOUNDED-METRICS for %s — GPT fallback used %d times",
             file_path.name, fallback_uses,
         )
+
+    # Phase 2 — identity arithmetic cross-checks (deterministic).
+    # Flags inconsistencies on the implicated metric's validation_notes
+    # and downgrades to "suspicious" if the discrepancy is material.
+    identity_flags = run_identity_checks(bounded_metrics)
+    if identity_flags:
+        _log.info(
+            "BOUNDED-METRICS for %s — identity checks flagged %d metric(s): %s",
+            file_path.name, len(identity_flags), ", ".join(identity_flags.keys()),
+        )
+        for metric_name, reasons in identity_flags.items():
+            rec = bounded_metrics.get(metric_name)
+            if not rec:
+                continue
+            rec["validation_notes"] = (rec.get("validation_notes") or []) + [
+                f"Identity check flagged this metric: {r}" for r in reasons
+            ]
+            # Only downgrade if it was verified before; never upgrade
+            if rec["status"] == "verified":
+                rec["status"] = "suspicious"
 
     # Cache the result
     extraction_cache.save_cache(

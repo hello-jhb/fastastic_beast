@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 
-RESOLVER_VERSION = "phase1_5b.v1"
+RESOLVER_VERSION = "phase2.v1"
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +172,11 @@ def resolve_metric(metric: dict, candidates: list[dict]) -> dict:
 
         # Preferred sheet ranking
         pref_score = _preferred_sheet_score(cand["sheet"], preferred_sheets)
+
+        # Annotate the candidate dict itself (so Phase 2 resolver can read it)
+        cand["passes_validation"] = passes_range
+        cand["scale_correction"]  = scale_correction
+        cand["pref_score"]        = pref_score
 
         scored.append({
             "candidate":         cand,
