@@ -74,7 +74,17 @@ SCHEMA_RULES: dict[str, dict] = {
     "Total Project Cost": {
         "unit": "USD", "scale": "actual", "period": "at_close",
         "range_min": 1_000_000, "range_max": 15_000_000_000,
-        "preferred_sheets": "sources & uses; summary; general info; budget",
+        "preferred_sheets": "sources & uses; summary; general info; inputs; budget",
+    },
+    "Debt Amount": {
+        "unit": "USD", "scale": "actual", "period": "at_close",
+        "range_min": 1_000_000, "range_max": 10_000_000_000,
+        "preferred_sheets": "sources & uses; inputs; debt; debt information; summary; general info",
+    },
+    "Equity Invested": {
+        "unit": "USD", "scale": "actual", "period": "at_close",
+        "range_min": 500_000, "range_max": 10_000_000_000,
+        "preferred_sheets": "sources & uses; inputs; summary; general info; one pager",
     },
     "Net Operating Income (NOI)": {  # treated as Going-in NOI
         "unit": "USD", "scale": "actual", "period": "year_1",
