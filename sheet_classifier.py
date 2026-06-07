@@ -151,6 +151,42 @@ def classify_sheets(file_path: Path) -> dict[str, dict]:
     return result
 
 
+def nominate_authoritative_tabs(
+    classification: dict[str, dict],
+) -> dict[str, list[str]]:
+    """
+    From the per-sheet classification, nominate the authoritative tab(s) per role.
+
+    Returns {role: [sheet_name, ...]} ordered best-first (high confidence first).
+    Only includes non-skipped roles. Used by the Section Reader to know which
+    actual tabs in THIS file to read for each metric's source hierarchy.
+
+    Example return:
+      {
+        "summary":      ["One Pager", "Key UW Metrics", "General Information"],
+        "inputs":       ["Inputs"],
+        "cash_flow":    ["Annual CFs"],
+        "debt":         ["Debt Information", "Debt"],
+        "returns":      ["IRR Tracker"],
+        "sources_uses": ["Inputs"],   # if a sheet is classified sources_uses
+      }
+    """
+    _CONF_RANK = {"high": 0, "medium": 1, "low": 2}
+    by_role: dict[str, list[tuple[int, str]]] = {}
+    for sheet, info in classification.items():
+        role = info.get("role", "other")
+        if role in ("comps", "sensitivity", "backup", "other"):
+            continue
+        conf = info.get("confidence", "low")
+        by_role.setdefault(role, []).append((_CONF_RANK.get(conf, 2), sheet))
+
+    nominated: dict[str, list[str]] = {}
+    for role, entries in by_role.items():
+        entries.sort(key=lambda x: x[0])  # high confidence first
+        nominated[role] = [name for _, name in entries]
+    return nominated
+
+
 def effective_tier(
     sheet_name: str,
     name_based_tier: int,

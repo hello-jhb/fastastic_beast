@@ -254,6 +254,10 @@ def load_metric_catalog(path=CATALOG_PATH):
         # Phase 1.5a — property-type restriction (empty = applies to all)
         applies_to_pt_text = get_col(row, col_map, ["applies_to_property_types", "Applies To Property Types"])
         applies_to_property_types = split_list(applies_to_pt_text)
+        # Phase 3 — section grouping + source hierarchy (sheet roles)
+        section          = get_col(row, col_map, ["section", "Section"])
+        source_primary   = split_list(get_col(row, col_map, ["source_primary", "Source Primary"]))
+        source_forbidden = split_list(get_col(row, col_map, ["source_forbidden", "Source Forbidden"]))
 
         aliases = build_aliases(metric_name, aliases_text)
 
@@ -283,6 +287,10 @@ def load_metric_catalog(path=CATALOG_PATH):
             "in_bounded_list":   in_bounded_list,
             # Phase 1.5a — property-type restriction
             "applies_to_property_types": applies_to_property_types,
+            # Phase 3 — section + source hierarchy
+            "section":            section or None,
+            "source_primary":     source_primary,
+            "source_forbidden":   source_forbidden,
         }
 
         catalog.append(metric)

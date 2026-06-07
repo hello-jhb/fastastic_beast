@@ -101,6 +101,8 @@ ARITHMETIC IDENTITIES (a correct extraction satisfies these):
 SHEET_ROLE_VOCAB = """\
 SHEET ROLES (classify each sheet by what it CONTAINS, not its name):
   summary       — deal-level summary / one-pager / key UW metrics / general info
+  inputs        — assumptions / inputs tab driving the model (rent, growth,
+                  unit mix, purchase price, debt terms entered as assumptions)
   cash_flow     — multi-year operating proforma (revenue, expenses, NOI by year)
   sources_uses  — sources & uses / capitalization table at close
   debt          — loan terms, covenants, amortization, debt schedule
@@ -118,9 +120,10 @@ SHEET ROLES (classify each sheet by what it CONTAINS, not its name):
 # Used when GPT classification overrides the name-based tier guess.
 ROLE_TO_TIER: dict[str, int] = {
     "summary":      1,
+    "inputs":       1,   # assumptions/inputs tab is authoritative for deal basis
+    "sources_uses": 1,   # sources & uses is authoritative for basis/debt/equity
     "cash_flow":    2,
     "capex":        3,
-    "sources_uses": 1,   # sources & uses is authoritative for basis/debt/equity
     "debt":         4,
     "returns":      5,
     "rent_roll":    6,
@@ -131,6 +134,12 @@ ROLE_TO_TIER: dict[str, int] = {
     "sensitivity":  99,
     "backup":       99,
 }
+
+# Canonical role list (for validation of catalog source-hierarchy entries)
+ALL_ROLES = [
+    "summary", "inputs", "sources_uses", "cash_flow", "capex", "debt",
+    "returns", "rent_roll", "comps", "sensitivity", "backup", "market", "other",
+]
 
 
 # ---------------------------------------------------------------------------
