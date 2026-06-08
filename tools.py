@@ -405,9 +405,17 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
     section_results: dict[str, dict] = {}   # metric_name -> extraction dict
     if classification and llm_available():
         try:
-            from section_reader import read_section, SECTION_ORDER
+            from section_reader import read_section, SECTION_ORDER, detect_workbook_units
             from sheet_classifier import nominate_authoritative_tabs
             nominated = nominate_authoritative_tabs(classification)
+
+            # Detect model-wide units once (e.g. BAC One Pager: "$ in '000s").
+            # Applied to every section read so values report true dollars.
+            summary_tabs = nominated.get("summary", []) + nominated.get("inputs", [])
+            model_units_mult = detect_workbook_units(file_path, summary_tabs)
+            if model_units_mult != 1:
+                _log.info("UNITS for %s — model-wide ×%s detected",
+                          file_path.name, f"{model_units_mult:,}")
 
             # group bounded metrics by section
             by_section: dict[str, list[dict]] = {}
@@ -422,7 +430,7 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
             jobs = {sec: ms for sec, ms in jobs.items() if ms}
             with ThreadPoolExecutor(max_workers=len(jobs) or 1) as ex:
                 futures = {
-                    ex.submit(read_section, sec, ms, file_path, nominated): sec
+                    ex.submit(read_section, sec, ms, file_path, nominated, model_units_mult): sec
                     for sec, ms in jobs.items()
                 }
                 for fut in as_completed(futures):
@@ -447,25 +455,29 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
         available_sheets = []
 
     # === Build one record per metric: section reader first, proximity fallback =
-    bounded_metrics: dict[str, Any] = {}
-    section_hits = 0
-    fallback_uses = 0
-    for metric in bounded:
-        record = None
+    # The per-metric work is independent and the GPT fallback/resolver calls are
+    # I/O-bound (~10s each). On complex models 20+ metrics fall to fallback, so
+    # running this loop SEQUENTIALLY cost ~4 min. Parallelize it.
+    from concurrent.futures import ThreadPoolExecutor
 
-        # 1) Authoritative section read (validated: forbidden-source + range)
+    _counters = {"section_hits": 0, "fallback_uses": 0}
+
+    def _build_one(metric: dict):
+        record = None
+        is_section = False
+
+        # 1) Authoritative section read (validated)
         extraction = section_results.get(metric["metric_name"])
         if extraction:
             record = build_section_record(metric, extraction, classification)
             if record is not None:
-                section_hits += 1
+                is_section = True
 
         # 2) Proximity fallback (only if section read missing or rejected)
         if record is None:
             cands = candidates_by_metric.get(metric["metric_id"], [])
             record = resolve_metric(metric, cands)
 
-            # Phase 1.5b — GPT-as-reader fallback for zero-candidate cases.
             if (
                 record["status"] == "missing"
                 and llm_available()
@@ -473,20 +485,31 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
             ):
                 fallback_cand = fallback_find_metric(metric, file_path, available_sheets)
                 if fallback_cand:
-                    fallback_uses += 1
                     record = resolve_metric(metric, [fallback_cand])
                     record.setdefault("validation_notes", []).insert(
                         0,
                         f"Found via GPT fallback (catalog had 0 candidates). "
                         f"Reasoning: {fallback_cand.get('fallback_reasoning', '')[:140]}",
                     )
+                    record["_via_fallback"] = True
 
-            # Phase 2 — GPT resolver disambiguates candidate_pool with cell context.
             if record["status"] == "candidate_pool" and llm_available():
                 record = resolve_pool_with_gpt(record, metric, file_path)
 
         record["candidates"] = record.get("candidates", [])[:5]
-        bounded_metrics[metric["metric_name"]] = record
+        return metric["metric_name"], record, is_section
+
+    bounded_metrics: dict[str, Any] = {}
+    section_hits = 0
+    fallback_uses = 0
+    # Bounded worker count — enough to overlap the I/O without hammering the API.
+    with ThreadPoolExecutor(max_workers=min(8, len(bounded) or 1)) as ex:
+        for name, record, is_section in ex.map(_build_one, bounded):
+            if is_section:
+                section_hits += 1
+            if record.pop("_via_fallback", False):
+                fallback_uses += 1
+            bounded_metrics[name] = record
 
     _log.info(
         "BOUNDED-METRICS for %s — %d via section reader, %d via GPT fallback, "

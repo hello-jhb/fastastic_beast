@@ -62,9 +62,66 @@ SECTION_ORDER = ["property", "deal_basis", "leverage", "returns", "capex"]
 # Tab rendering — turn a sheet into a structured table a human/GPT can read
 # ---------------------------------------------------------------------------
 
-def render_tab_as_table(file_path: Path, sheet_name: str) -> str:
+def _detect_units_multiplier(ws, max_row: int, max_col: int) -> int:
+    """
+    Scan the top rows of a sheet for a units declaration and return the
+    multiplier to convert displayed values to true dollars:
+        "in $000s" / "in thousands" / "($ in 000s)"      → 1_000
+        "$MM" / "in millions" / "($ in millions)"        → 1_000_000
+    Returns 1 if no marker found. Only scans the top ~25 rows (markers are
+    almost always near the title).
+    """
+    import re as _re
+    thousands_re = _re.compile(r"\$?\s*0{3}s|in\s+thousands|\(\s*\$?\s*in\s+000", _re.IGNORECASE)
+    # '000s, $000s, "in thousands", "($ in 000s)"
+    millions_re  = _re.compile(r"\$mm\b|in\s+millions|\(\s*\$?\s*in\s+millions|\$\s*millions", _re.IGNORECASE)
+    for r in range(1, min(max_row, 25) + 1):
+        for c in range(1, min(max_col, 12) + 1):
+            v = ws.cell(row=r, column=c).value
+            if not isinstance(v, str):
+                continue
+            s = v.strip()
+            if millions_re.search(s):
+                return 1_000_000
+            if thousands_re.search(s):
+                return 1_000
+    return 1
+
+
+def detect_workbook_units(file_path: Path, summary_tabs: list[str]) -> int:
+    """
+    Detect a MODEL-WIDE units multiplier by scanning the summary/one-pager tabs.
+    Institutional models often state "$ Amounts in '000s" once on the summary
+    and apply it to every tab (BAC: One Pager says '000s; the Capex tab has no
+    marker but its values are still in thousands). Returns 1 / 1_000 / 1_000_000.
+    """
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    except Exception:
+        return 1
+    mult = 1
+    for tab in summary_tabs:
+        if tab not in wb.sheetnames:
+            continue
+        ws = wb[tab]
+        m = _detect_units_multiplier(ws, min(ws.max_row, 25), min(ws.max_column, 12))
+        if m != 1:
+            mult = m
+            break
+    try:
+        wb.close()
+    except Exception:
+        pass
+    return mult
+
+
+def render_tab_as_table(file_path: Path, sheet_name: str, default_units_mult: int = 1) -> str:
     """
     Render one sheet as a compact, cell-referenced table.
+
+    default_units_mult: model-wide units multiplier to apply when this specific
+    tab has no units marker of its own (units are often declared once on the
+    summary and apply to every tab).
 
     Each non-empty row is emitted as:
         <row label>  |  <colHeader>=<value> (CELL)  |  ...
@@ -82,6 +139,16 @@ def render_tab_as_table(file_path: Path, sheet_name: str) -> str:
     ws = wb[sheet_name]
     max_row = min(ws.max_row, _MAX_ROWS)
     max_col = min(ws.max_column, _MAX_COLS)
+
+    # Detect a tab-level UNITS marker ("in $000s", "in thousands", "$MM",
+    # "in millions"). Hotel/large models often state this once at the top and
+    # then list values in those units (e.g. BAC Capex: Total Capex = 23,940.6
+    # meaning $23.94M). We surface the multiplier to GPT so it reports the true
+    # dollar value, not the displayed-in-thousands figure.
+    # Tab-specific marker wins; otherwise inherit the model-wide default.
+    units_mult = _detect_units_multiplier(ws, max_row, max_col)
+    if units_mult == 1 and default_units_mult != 1:
+        units_mult = default_units_mult
 
     # Detect PERIOD header rows only — rows where multiple cells look like
     # period/column labels (years, Year N, Stabilized, Exit, At Close, Going-In).
@@ -127,6 +194,13 @@ def render_tab_as_table(file_path: Path, sheet_name: str) -> str:
     header_rows = period_header_rows  # only skip genuine period-header rows below
 
     lines: list[str] = [f"=== SHEET: {sheet_name} ==="]
+    if units_mult and units_mult != 1:
+        unit_word = "thousands ($000s)" if units_mult == 1_000 else "millions ($MM)"
+        lines.append(
+            f"!! UNITS NOTE: dollar values on this sheet are stated in {unit_word}. "
+            f"Multiply by {units_mult:,} to get the true dollar amount "
+            f"(e.g. a displayed 23,940 means ${23940*units_mult:,.0f})."
+        )
     if header_rows:
         hdr_desc = []
         for hr, cells in sorted(header_rows.items()):
@@ -269,9 +343,14 @@ def read_section(
     section_metrics: list[dict],
     file_path: Path,
     nominated_tabs: dict[str, list[str]],
+    model_units_mult: int = 1,
 ) -> dict[str, dict]:
     """
     Read one section from its authoritative tabs.
+
+    model_units_mult: workbook-wide units multiplier (1 / 1_000 / 1_000_000),
+    applied to tabs that don't declare their own units. GPT is told to report
+    true dollar values.
 
     Returns {metric_name: extraction_dict} where extraction_dict is:
         {found, value, cell, sheet, column_header, reasoning, alt?}
@@ -287,10 +366,10 @@ def read_section(
         log.info("Section %s — no authoritative tabs resolved; skipping reader", section)
         return {}
 
-    # Render the authoritative tabs
+    # Render the authoritative tabs (with model-wide units applied)
     rendered = []
     for tab in tabs:
-        rendered.append(render_tab_as_table(file_path, tab))
+        rendered.append(render_tab_as_table(file_path, tab, default_units_mult=model_units_mult))
     tables_block = "\n\n".join(rendered)
 
     # Build the checklist
