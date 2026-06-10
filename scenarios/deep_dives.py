@@ -183,11 +183,19 @@ def deep_dive_cash_flow() -> dict[str, Any]:
                 if relevant_ts:
                     ts_lines = ["", "Time series (relevant rows):"]
                     for s in relevant_ts:
+                        values = s.get("annual_values") or s["values"]
+                        headers = s.get("annual_headers") or s.get("headers") or []
+                        meta = ""
+                        if s.get("annualized"):
+                            meta = f" [annualized from monthly; {s.get('aggregation_method')}]"
+                        elif s.get("periodicity"):
+                            meta = f" [{s.get('periodicity')}]"
                         vals = " | ".join(
                             f"{v:,.0f}" if isinstance(v, (int, float)) and v else "—"
-                            for v in s["values"][:8]
+                            for v in values[:8]
                         )
-                        ts_lines.append(f"  [{s['sheet']}] {s['label']}: {vals}")
+                        header_str = " | ".join(str(h) for h in headers[:8])
+                        ts_lines.append(f"  [{s['sheet']}] {s['label']}{meta}: {header_str} => {vals}")
                     ts_block = "\n".join(ts_lines)
             except Exception:
                 pass

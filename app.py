@@ -276,6 +276,11 @@ def _ssot_panel() -> None:
                 f"🔎 Analyst Bundle — {n_verified} verified / {n_issues} to review",
                 expanded=False,
             ):
+                metadata = bundle.get("run_metadata", {})
+                if metadata:
+                    st.markdown("**Run Metadata**")
+                    st.json(metadata)
+
                 wm = bundle.get("workbook_map", {})
                 st.markdown("**Workbook Map** — which tabs Collie read vs skipped")
                 st.caption(
@@ -283,9 +288,52 @@ def _ssot_panel() -> None:
                     f"{len(wm.get('skipped_sheets', []))} skipped "
                     f"({', '.join(wm.get('skipped_sheets', [])[:6])}{'…' if len(wm.get('skipped_sheets', []))>6 else ''})"
                 )
+                content_roles = wm.get("content_roles") or {}
+                authoritative_tabs = wm.get("authoritative_tabs") or {}
+                if content_roles:
+                    st.markdown("**Content Roles** — workbook mapper classifications")
+                    st.dataframe(
+                        [
+                            {
+                                "sheet": sheet,
+                                "role": info.get("role"),
+                                "confidence": info.get("confidence"),
+                                "tier": info.get("implied_tier"),
+                            }
+                            for sheet, info in content_roles.items()
+                        ],
+                        use_container_width=True,
+                    )
+                if authoritative_tabs:
+                    st.markdown("**Authoritative Tabs** — section-reader source map")
+                    st.json(authoritative_tabs)
 
                 st.markdown("**Status Summary** — QC health check")
                 st.json(ss)
+
+                identity_checks = bundle.get("identity_checks") or []
+                if identity_checks:
+                    st.markdown("**Identity Checks** — final reconciled values only")
+                    st.dataframe(identity_checks, use_container_width=True)
+
+                extraction_plan = bundle.get("extraction_plan") or []
+                if extraction_plan:
+                    with st.expander("Extraction Plan", expanded=False):
+                        st.dataframe(
+                            [
+                                {
+                                    "metric": row.get("metric"),
+                                    "section": row.get("section"),
+                                    "expected_roles": ", ".join(row.get("expected_source_roles") or []),
+                                    "actual_sheet": (row.get("actual_source_used") or {}).get("sheet"),
+                                    "actual_cell": (row.get("actual_source_used") or {}).get("cell"),
+                                    "status": (row.get("actual_source_used") or {}).get("status"),
+                                    "method": (row.get("actual_source_used") or {}).get("method"),
+                                }
+                                for row in extraction_plan
+                            ],
+                            use_container_width=True,
+                        )
 
                 bpr = bundle.get("business_plan_read", {})
                 if any(bpr.values()):
@@ -312,6 +360,10 @@ def _ssot_panel() -> None:
                      for r in bundle.get("verified_facts", [])],
                     use_container_width=True,
                 )
+                source_audit = bundle.get("source_audit") or []
+                if source_audit:
+                    with st.expander("Source Audit", expanded=False):
+                        st.json(source_audit)
                 if bundle.get("bundle_path"):
                     st.caption(f"Saved: {bundle['bundle_path']}")
     except Exception:

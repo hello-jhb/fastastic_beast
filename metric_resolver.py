@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 
-RESOLVER_VERSION = "phase3.v9"  # robust value parsing + primary-source enforcement
+RESOLVER_VERSION = "phase3.v10"  # identity checks run only after reconciliation
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +64,15 @@ def _validate_against_range(value, schema: dict) -> tuple[bool, str | None]:
         v = float(value)
     except (TypeError, ValueError):
         return False, None
+
+    # Hold periods are often stored as month counts while the canonical catalog
+    # unit is years. Let these through so reconciliation can normalize 60 -> 5y.
+    if (
+        schema.get("metric_name") == "Hold Period"
+        and unit == "years"
+        and 24 < v <= 360
+    ):
+        return True, None
 
     if _in_range(v):
         return True, None
@@ -427,6 +436,7 @@ def build_section_record(metric: dict, extraction: dict, sheet_role_map: dict | 
     cell  = extraction.get("cell")
     role  = _role_of_sheet(sheet, sheet_role_map)
     reasoning = extraction.get("reasoning", "")
+    observed_period = extraction.get("period") or extraction.get("column_header")
 
     if raw_value in (None, "", "—"):
         return None
@@ -501,6 +511,7 @@ def build_section_record(metric: dict, extraction: dict, sheet_role_map: dict | 
     audit["accepted"] = {
         "raw": raw_value, "value": value, "normalized": normalized,
         "cell": cell, "sheet": sheet, "role": role,
+        "observed_period": observed_period,
         "method": "section_reader", "reason": reasoning,
     }
 
@@ -513,6 +524,7 @@ def build_section_record(metric: dict, extraction: dict, sheet_role_map: dict | 
         "unit":                 unit,
         "scale":                scale,
         "period":               period,
+        "observed_period":      observed_period,
         "source_sheet":         sheet,
         "source_cell":          cell,
         "sheet_tier":           None,

@@ -9,7 +9,7 @@ REPOSITORY_DIR = Path("repository")
 # Catalog version — bump whenever the schema or alias lists change in a way
 # that should invalidate cached extraction results. Used as part of the
 # versioned cache key.
-CATALOG_VERSION = "phase3.v4"  # added Debt Amount + Equity Invested to bounded list
+CATALOG_VERSION = "phase3.v5"  # assumptions/input source defaults + purchase-date aliases
 
 
 # -----------------------------
@@ -161,6 +161,9 @@ def build_aliases(metric_name, aliases_text):
     if "purchase price" in lower:
         aliases += ["Purchase Price", "Acquisition Price"]
 
+    if lower == "purchase date":
+        aliases += ["Analysis Start", "Start Date", "Acquisition Start"]
+
     # Basis — only the primary all-in basis metric gets generic "Basis" aliases.
     # Per-SF basis, market replacement basis, etc. have specific aliases in catalog.
     if "all-in basis" in lower or "all in basis" in lower or "total acquisition cost" in lower:
@@ -173,6 +176,16 @@ def build_aliases(metric_name, aliases_text):
 
     if "walt" in lower or "wale" in lower:
         aliases += ["WALT", "WALE", "Weighted Average Lease Term"]
+
+    if lower == "hold period":
+        aliases += [
+            "Hold",
+            "Term",
+            "Investment Term",
+            "Investment Horizon",
+            "Investment Period",
+            "Years Held",
+        ]
 
     if "ltv" in lower:
         aliases += ["LTV", "Loan to Value"]
@@ -292,6 +305,24 @@ def load_metric_catalog(path=CATALOG_PATH):
             "source_primary":     source_primary,
             "source_forbidden":   source_forbidden,
         }
+
+        # Assumptions/input tabs often contain authoritative deal-basis and
+        # leverage values. Keep this runtime default in code so older catalog
+        # workbooks still follow the target source hierarchy.
+        if "inputs" in source_primary:
+            for sheet_keyword in ("inputs", "assumption", "assumptions", "general info"):
+                if sheet_keyword not in metric["preferred_sheets"]:
+                    metric["preferred_sheets"].append(sheet_keyword)
+
+        # Debt assumptions are commonly entered on assumptions/input tabs, not
+        # only dedicated debt tabs.
+        if section == "leverage" and "debt" in source_primary:
+            for role in ("inputs", "summary"):
+                if role not in metric["source_primary"]:
+                    metric["source_primary"].append(role)
+            for sheet_keyword in ("inputs", "assumption", "summary", "general info"):
+                if sheet_keyword not in metric["preferred_sheets"]:
+                    metric["preferred_sheets"].append(sheet_keyword)
 
         catalog.append(metric)
 

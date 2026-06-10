@@ -327,6 +327,7 @@ Return ONLY JSON:
      "value": <number|string>,
      "cell": "C11",
      "sheet": "<sheet name>",
+     "period": "<observed period, e.g. Year 1 / Stabilized / Exit / ''>",
      "column_header": "<the period/column label, or '' >",
      "reasoning": "<row label + column header that justify this>",
      "alt": {"value": <other value>, "cell": "...", "sheet": "..."}  // optional

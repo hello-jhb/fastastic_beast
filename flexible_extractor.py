@@ -551,6 +551,12 @@ def scan_workbook_for_all_metrics(file_path, catalog):
                     mid_word = char_before.isalpha() or char_after.isalpha()
                     if mid_word:
                         continue
+                    if (
+                        metric.get("metric_name") == "Hold Period"
+                        and alias_text in {"term", "hold"}
+                        and any(x in cell_text for x in ("loan", "debt", "maturity", "amort"))
+                    ):
+                        continue
 
                     value, value_cell, direction = find_nearby_value(
                         ws, cell.row, cell.column,
@@ -684,6 +690,12 @@ def scan_workbook_for_candidates(file_path, catalog, sheet_tier_map: dict | None
                     char_before = cell_text[idx - 1] if idx > 0 else " "
                     char_after  = cell_text[idx + len(alias_text)] if idx + len(alias_text) < len(cell_text) else " "
                     if char_before.isalpha() or char_after.isalpha():
+                        continue
+                    if (
+                        metric.get("metric_name") == "Hold Period"
+                        and alias_text in {"term", "hold"}
+                        and any(x in cell_text for x in ("loan", "debt", "maturity", "amort"))
+                    ):
                         continue
 
                     value, value_cell, direction = find_nearby_value(
@@ -931,7 +943,13 @@ def extract_time_series_rows(file_path, max_rows_per_sheet: int = 25, max_total_
     series_per_sheet: dict[str, int] = {}
     period_pattern_re = re.compile(
         r"^(20\d{2}|y(ear)?\s*\d{1,2}|yr\s*\d{1,2}|q[1-4]|fy\d{2,4}|"
+        r"jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|"
+        r"aug(ust)?|sep(t|tember)?|oct(ober)?|nov(ember)?|dec(ember)?|"
         r"stabili[sz]ed|exit|going.?in|at.close|post.close|trended|untrended)",
+        re.IGNORECASE,
+    )
+    month_name_re = re.compile(
+        r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b",
         re.IGNORECASE,
     )
 
@@ -942,10 +960,63 @@ def extract_time_series_rows(file_path, max_rows_per_sheet: int = 25, max_total_
         # Year stored as a number
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             return 2000 <= val <= 2100
+        if is_datetime(val):
+            return True
         s = str(val).strip()
         if not s:
             return False
         return bool(period_pattern_re.match(s))
+
+    def _header_year(header: str):
+        import datetime as _dt
+        if isinstance(header, (_dt.datetime, _dt.date)):
+            return header.year
+        text = str(header)
+        m = re.search(r"(20\d{2}|19\d{2})", text)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def _detect_periodicity(headers: list[str]) -> str:
+        month_like = 0
+        year_like = 0
+        quarter_like = 0
+        for h in headers:
+            text = str(h)
+            if (
+                month_name_re.search(text)
+                or is_datetime(h)
+                or re.match(r"^(20\d{2}|19\d{2})[-/]\d{1,2}[-/]\d{1,2}", text.strip())
+            ):
+                month_like += 1
+            elif re.match(r"^(q[1-4])\b", text.strip(), re.IGNORECASE):
+                quarter_like += 1
+            elif re.match(r"^(20\d{2}|19\d{2}|y(ear)?\s*\d+|yr\s*\d+)", text.strip(), re.IGNORECASE):
+                year_like += 1
+        if month_like >= 3 and month_like >= year_like:
+            return "monthly"
+        if quarter_like >= 3:
+            return "quarterly"
+        return "annual"
+
+    def _annualize_if_monthly(headers: list[str], values: list) -> tuple[list[str], list, str | None]:
+        if _detect_periodicity(headers) != "monthly":
+            return [], [], None
+        annual: dict[str, float] = {}
+        for h, v in zip(headers, values):
+            if v is None:
+                continue
+            year = _header_year(h)
+            if year is None:
+                # Fall back to sequence years when the model uses Jan/Feb...
+                # without year labels. Keep the bucket explicit rather than
+                # pretending it is a calendar year.
+                year = "annualized_period"
+            key = str(year)
+            annual[key] = annual.get(key, 0.0) + float(v)
+        if not annual:
+            return [], [], None
+        return list(annual.keys()), list(annual.values()), "sum_monthly_columns_by_year"
 
     for sheet_name in sorted_sheets:
         if len(series) >= max_total_rows:
@@ -1013,12 +1084,21 @@ def extract_time_series_rows(file_path, max_rows_per_sheet: int = 25, max_total_
                     continue
 
                 if numeric_count >= 3:
+                    periodicity = _detect_periodicity(aligned_headers)
+                    annual_headers, annual_values, aggregation_method = _annualize_if_monthly(
+                        aligned_headers, values
+                    )
                     series.append({
                         "sheet":      sheet_name,
                         "label":      label,
                         "label_cell": label_cell,
                         "headers":    aligned_headers,
                         "values":     values,
+                        "periodicity": periodicity,
+                        "annualized": bool(annual_headers),
+                        "aggregation_method": aggregation_method,
+                        "annual_headers": annual_headers,
+                        "annual_values": annual_values,
                     })
                     series_per_sheet[sheet_name] = series_per_sheet.get(sheet_name, 0) + 1
 

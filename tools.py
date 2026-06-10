@@ -306,6 +306,8 @@ def _inventory_sheets_by_tier(file_path: Path) -> dict[str, Any]:
           "skipped_sheets": [list of sheets the catalog scan SKIPPED],
           "low_priority_sheets": [list of Tier 6 sheets — scanned but lowest priority],
           "all_sheets": [list of every sheet name in the file],
+          "content_roles": {sheet: {role, confidence, implied_tier}},
+          "authoritative_tabs": {role: [sheet, ...]},
         }
 
     Used so the chat agent knows which sheets exist but weren't bulk-extracted —
@@ -319,17 +321,42 @@ def _inventory_sheets_by_tier(file_path: Path) -> dict[str, Any]:
             t = sheet_priority_tier(s)
             by_tier.setdefault(t, []).append(s)
         wb.close()
+        content_roles: dict[str, dict] = {}
+        authoritative_tabs: dict[str, list[str]] = {}
+        if llm_available():
+            try:
+                from sheet_classifier import classify_sheets, nominate_authoritative_tabs
+                content_roles = classify_sheets(file_path) or {}
+                authoritative_tabs = (
+                    nominate_authoritative_tabs(content_roles)
+                    if content_roles else {}
+                )
+            except Exception as e:
+                _log.error("Workbook mapper failed for %s: %s", file_path.name, e)
         return {
             "by_tier":             by_tier,
             "skipped_sheets":      by_tier.get(99, []),
             "low_priority_sheets": by_tier.get(6, []),
             "all_sheets":          [s for sheets in by_tier.values() for s in sheets],
+            "content_roles":       content_roles,
+            "authoritative_tabs":  authoritative_tabs,
         }
     except Exception:
-        return {"by_tier": {}, "skipped_sheets": [], "low_priority_sheets": [], "all_sheets": []}
+        return {
+            "by_tier": {},
+            "skipped_sheets": [],
+            "low_priority_sheets": [],
+            "all_sheets": [],
+            "content_roles": {},
+            "authoritative_tabs": {},
+        }
 
 
-def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, bool]:
+def _run_bounded_extraction(
+    file_path: Path,
+    layer: str,
+    sheet_classification: dict[str, dict] | None = None,
+) -> tuple[dict, str, bool]:
     """
     Phase 1 — extract the 25 bounded analyst-checklist metrics with schema
     validation and ranked candidate selection.
@@ -371,9 +398,31 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
     # Phase 2.5 — content-based sheet classification. Gives both a tier map
     # (for proximity fallback) AND the raw classification (for authoritative-tab
     # nomination + forbidden-source role lookup). Silently {} without API key.
-    classification: dict[str, dict] = {}
+    classification: dict[str, dict] = sheet_classification or {}
     sheet_tier_map: dict[str, int] | None = None
-    if llm_available():
+    if classification:
+        try:
+            from sheet_classifier import effective_tier
+            from flexible_extractor import sheet_priority_tier
+            import openpyxl as _opx
+            _wb = _opx.load_workbook(file_path, data_only=True, read_only=True)
+            sheet_tier_map = {
+                name: effective_tier(name, sheet_priority_tier(name), classification)
+                for name in _wb.sheetnames
+            }
+            _wb.close()
+            overrides = sum(
+                1 for n in sheet_tier_map
+                if sheet_tier_map[n] != sheet_priority_tier(n)
+            )
+            _log.info(
+                "SHEET-CLASSIFY for %s — reusing %d mapped sheets, %d tier overrides",
+                file_path.name, len(classification), overrides,
+            )
+        except Exception as e:
+            _log.error("Sheet classification reuse failed for %s: %s", file_path.name, e)
+            classification, sheet_tier_map = {}, None
+    elif llm_available():
         try:
             from sheet_classifier import classify_sheets, effective_tier
             from flexible_extractor import sheet_priority_tier
@@ -518,25 +567,8 @@ def _run_bounded_extraction(file_path: Path, layer: str) -> tuple[dict, str, boo
         len(bounded) - section_hits - fallback_uses,
     )
 
-    # Phase 2 — identity arithmetic cross-checks (deterministic).
-    # Flags inconsistencies on the implicated metric's validation_notes
-    # and downgrades to "suspicious" if the discrepancy is material.
-    identity_flags = run_identity_checks(bounded_metrics)
-    if identity_flags:
-        _log.info(
-            "BOUNDED-METRICS for %s — identity checks flagged %d metric(s): %s",
-            file_path.name, len(identity_flags), ", ".join(identity_flags.keys()),
-        )
-        for metric_name, reasons in identity_flags.items():
-            rec = bounded_metrics.get(metric_name)
-            if not rec:
-                continue
-            rec["validation_notes"] = (rec.get("validation_notes") or []) + [
-                f"Identity check flagged this metric: {r}" for r in reasons
-            ]
-            # Only downgrade if it was verified before; never upgrade
-            if rec["status"] == "verified":
-                rec["status"] = "suspicious"
+    # Identity checks intentionally do NOT run here. They must run once, after
+    # reconciliation has normalized/derived final values.
 
     # Cache the result
     extraction_cache.save_cache(
@@ -703,7 +735,7 @@ def _reconcile_bounded_metrics(bounded_metrics: dict, raw_insights: dict | None)
                 if isinstance(d, _dt.date):
                     return d
                 if isinstance(d, str):
-                    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+                    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
                         try:
                             return _dt.datetime.strptime(d[:19], fmt).date()
                         except ValueError:
@@ -762,7 +794,7 @@ def _years_between(d1, d2):
         if isinstance(d, _dt.date):
             return d
         if isinstance(d, str):
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+            for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
                 try:
                     return _dt.datetime.strptime(d[:19], fmt).date()
                 except ValueError:
@@ -826,7 +858,9 @@ def ingest_to_ssot_with_layer(filename: str, layer: str) -> dict[str, Any]:
     t0 = time.time()
     try:
         bounded_metrics, bounded_cache_key, bounded_cache_hit = _run_bounded_extraction(
-            file_path, layer
+            file_path,
+            layer,
+            sheet_classification=sheet_inventory.get("content_roles") or None,
         )
     except Exception as e:
         _log.error("BOUNDED-METRICS failed for %s — %s: %s", filename, type(e).__name__, e)
@@ -868,6 +902,11 @@ def ingest_to_ssot_with_layer(filename: str, layer: str) -> dict[str, Any]:
         _reconcile_bounded_metrics(bounded_metrics, raw_insights)
         # Final identity checks AFTER reconciliation/backfill/derivations.
         identity_flags = run_identity_checks(bounded_metrics)
+        if identity_flags:
+            _log.info(
+                "FINAL IDENTITY %s — flagged %d metric(s): %s",
+                filename, len(identity_flags), ", ".join(identity_flags.keys()),
+            )
         for metric_name, reasons in identity_flags.items():
             rec = bounded_metrics.get(metric_name)
             if not rec:
@@ -910,6 +949,16 @@ def ingest_to_ssot_with_layer(filename: str, layer: str) -> dict[str, Any]:
         raw_insights=raw_insights,
         sheet_inventory=sheet_inventory,
         bounded_metrics=bounded_metrics,
+        extraction_metadata={
+            "file_hash": extraction_cache.file_sha256(file_path),
+            "bounded_cache_key": bounded_cache_key,
+            "bounded_cache": "HIT" if bounded_cache_hit else "MISS",
+            "catalog_version": CATALOG_VERSION,
+            "extractor_version": EXTRACTOR_VERSION,
+            "resolver_version": RESOLVER_VERSION,
+            "fallback_version": FALLBACK_VERSION,
+            "resolver_gpt_version": RESOLVER_GPT_VERSION,
+        },
     )
 
     # Recompute derived metrics now that SSOT has new data

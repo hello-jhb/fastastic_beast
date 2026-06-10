@@ -136,6 +136,7 @@ def write_layer(
     raw_insights: dict[str, Any] | None = None,
     sheet_inventory: dict[str, Any] | None = None,
     bounded_metrics: dict[str, Any] | None = None,
+    extraction_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Write a layer's worth of metrics into the SSOT.
@@ -196,6 +197,9 @@ def write_layer(
         # status ∈ {verified, candidate_pool, suspicious, missing}
         # Memo generation reads from here for the 25 core analyst metrics.
         "bounded_metrics": bounded_metrics or {},
+
+        # Reproducibility metadata for the Analyst Bundle.
+        "extraction_metadata": extraction_metadata or {},
     }
 
     # Provenance log — one entry per field write.

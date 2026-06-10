@@ -61,19 +61,19 @@ CITATION RULES (NON-NEGOTIABLE):
 - MISSING bounded metrics: write "—" or omit the field. Never invent.
 - Inferred (Pass 2) fields: cite as "Multifamily (inferred)" — no cell ref.
 
-YOUR JOB: write a CONCISE deal snapshot. Three sections only: Snapshot,
-Investment Thesis (2 bullets), Data Appendix. The user will request deep
-dives (capital structure, cash flow, returns, capex, risks) via separate
-buttons — do NOT include those sections in this output.
+YOUR JOB: write a SIMPLE deal memo. Four sections only: Snapshot,
+Business Plan, Risks, Audit Appendix. The user will request deep dives
+(capital structure, cash flow, returns, capex) via separate buttons — do NOT
+include those sections in this output.
 
 STYLE RULES:
-- Snapshot: 3-5 sentences. Investment Thesis: EXACTLY 2 bullets. Appendix: data only.
+- Snapshot: 3-5 sentences. Business Plan: EXACTLY 2 bullets. Risks: EXACTLY 2 bullets. Appendix: data only.
 - Total output target: 250-400 words. Tight, executive-style.
 - Use markdown.
 - For Data Appendix metrics that are missing/suspicious, follow the explicit
   formatting rules below — do not silently omit them, the appendix is the audit.
 
-STRUCTURE (write ONLY these three sections):
+STRUCTURE (write ONLY these four sections):
 
 ## Snapshot
 One concise paragraph (3-5 sentences). Cover: asset name + property type (with
@@ -81,7 +81,7 @@ number of properties if portfolio), location, size (units / SF / keys),
 acquisition date, purchase price, target hold, headline return (Levered IRR).
 This is the elevator pitch. No filler.
 
-## Investment Thesis
+## Business Plan
 EXACTLY 2 sentences, bullet style. No paragraphs.
 - Bullet 1: opportunity framing — what type of asset, what market, what makes
   it attractive in one sentence. Example: "Opportunity to invest in well-located
@@ -91,7 +91,13 @@ EXACTLY 2 sentences, bullet style. No paragraphs.
   sentence. Example: "Value-Add play leveraging unit renovations and lease-up
   of vacant inventory to drive ~$2.5M NOI uplift."
 
-## Data Appendix
+## Risks
+EXACTLY 2 bullets. Use verified facts, source-audited issues, and Pass 2
+observations. Do not cite missing/suspicious values as facts.
+- Bullet 1: execution or underwriting risk.
+- Bullet 2: financing, exit, market, or data-quality risk.
+
+## Audit Appendix
 Render exactly these rows in this exact order. Use the DISPLAY LABEL on the
 left (left of the arrow) as the line label — never write the word "Metric".
 Pull the value from the bounded metric named on the right of the arrow.
@@ -144,8 +150,8 @@ FLOATING. Display Interest Rate as:
 Otherwise display Interest Rate as a single rate.
 
 DO NOT WRITE other sections in this output. Capital Structure, Cash Flow,
-Return Profile, CapEx Plan, and Key Risks are on-demand deep-dives the user
-will request via separate buttons. Do not generate them here.
+Return Profile, and CapEx Plan are on-demand deep-dives the user will request
+via separate buttons. Do not generate them here.
 """
 
 
@@ -179,11 +185,17 @@ def _format_time_series_block(series: list[dict], max_rows: int = 25) -> str:
         if s["sheet"] != current_sheet:
             current_sheet = s["sheet"]
             lines.append(f"\n[{current_sheet}]")
-            # Print headers once per sheet
-            lines.append("  " + " | ".join(s["headers"][:8]))
+        headers = s.get("annual_headers") or s["headers"]
+        values = s.get("annual_values") or s["values"]
+        meta = ""
+        if s.get("annualized"):
+            meta = f" [annualized from monthly; {s.get('aggregation_method')}]"
+        elif s.get("periodicity"):
+            meta = f" [{s.get('periodicity')}]"
+
         # Format values
         vals = []
-        for v in s["values"][:8]:
+        for v in values[:8]:
             if v is None:
                 vals.append("—")
             elif abs(v) >= 1_000_000:
@@ -194,7 +206,9 @@ def _format_time_series_block(series: list[dict], max_rows: int = 25) -> str:
                 vals.append(f"{v:.1%}")
             else:
                 vals.append(f"{v:,.0f}")
-        lines.append(f"  {s['label'][:40]:<40} {' | '.join(vals)}")
+        if headers:
+            lines.append("  " + " | ".join(str(h) for h in headers[:8]))
+        lines.append(f"  {(s['label'] + meta)[:70]:<70} {' | '.join(vals)}")
     return "\n".join(lines)
 
 

@@ -27,9 +27,51 @@ PATTERN_FILES = {
 }
 
 
+class KnowledgePatternError(ValueError):
+    """Raised when a runtime knowledge pattern is malformed."""
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def validate_pattern_schema(pattern_type: str, payload: dict[str, Any]) -> list[str]:
+    """
+    Validate the minimal schema needed for safe runtime use.
+
+    The validator is intentionally lightweight: it catches malformed active
+    patterns without turning knowledge files into a rigid database migration.
+    """
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return [f"{pattern_type}: payload must be an object"]
+    if "version" not in payload:
+        errors.append(f"{pattern_type}: missing version")
+
+    if pattern_type == "model_patterns":
+        for idx, pattern in enumerate(payload.get("patterns", [])):
+            prefix = f"{pattern_type}.patterns[{idx}]"
+            for field in ("pattern_id", "status", "model_type", "signals"):
+                if field not in pattern:
+                    errors.append(f"{prefix}: missing {field}")
+    elif pattern_type == "metric_patterns":
+        for midx, metric in enumerate(payload.get("metrics", [])):
+            mprefix = f"{pattern_type}.metrics[{midx}]"
+            if "metric" not in metric:
+                errors.append(f"{mprefix}: missing metric")
+            for ridx, rule in enumerate(metric.get("rules", [])):
+                rprefix = f"{mprefix}.rules[{ridx}]"
+                for field in ("rule_id", "status", "pattern", "confidence", "evidence_count"):
+                    if field not in rule:
+                        errors.append(f"{rprefix}: missing {field}")
+    elif pattern_type == "business_plan_patterns":
+        for idx, pattern in enumerate(payload.get("patterns", [])):
+            prefix = f"{pattern_type}.patterns[{idx}]"
+            for field in ("pattern_id", "status", "property_type", "signals"):
+                if field not in pattern:
+                    errors.append(f"{prefix}: missing {field}")
+    return errors
 
 
 @lru_cache(maxsize=1)
@@ -46,9 +88,51 @@ def load_knowledge_layer(base_dir: Path | str = KNOWLEDGE_DIR) -> dict[str, Any]
     for key, filename in PATTERN_FILES.items():
         path = patterns_dir / filename
         loaded[key] = _load_json(path) if path.exists() else {}
+        errors = validate_pattern_schema(key, loaded[key]) if loaded[key] else []
+        if errors:
+            raise KnowledgePatternError("; ".join(errors))
     return {
         "knowledge_dir": str(root),
         "patterns": loaded,
+    }
+
+
+def load_active_patterns(base_dir: Path | str = KNOWLEDGE_DIR) -> dict[str, Any]:
+    """
+    Load only runtime-eligible active patterns.
+
+    Raw observations are never read here. Candidate/inactive patterns remain in
+    the catalogs as evidence and review material, but cannot influence runtime.
+    """
+    layer = load_knowledge_layer(base_dir)
+    patterns = layer["patterns"]
+
+    model_payload = patterns.get("model_patterns", {})
+    metric_payload = patterns.get("metric_patterns", {})
+    business_payload = patterns.get("business_plan_patterns", {})
+
+    active_metric_groups: list[dict[str, Any]] = []
+    for metric in metric_payload.get("metrics", []):
+        active_rules = [
+            rule for rule in metric.get("rules", [])
+            if rule.get("status") == "active"
+        ]
+        if active_rules:
+            active_metric_groups.append({
+                **{k: v for k, v in metric.items() if k != "rules"},
+                "rules": active_rules,
+            })
+
+    return {
+        "model_patterns": [
+            p for p in model_payload.get("patterns", [])
+            if p.get("status") == "active"
+        ],
+        "metric_patterns": active_metric_groups,
+        "business_plan_patterns": [
+            p for p in business_payload.get("patterns", [])
+            if p.get("status") == "active"
+        ],
     }
 
 

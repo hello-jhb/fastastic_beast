@@ -15,7 +15,7 @@
   "patterns": [
     {
       "pattern_id": "generic_acquisition_underwriting_v1",
-      "status": "active",
+      "status": "candidate",
       "model_type": "acquisition_underwriting",
       "common_structure": {
         "summary": [
