@@ -923,7 +923,26 @@ def _confirm_aam_and_ingest(agent: AgentSession, verified: dict) -> None:
             if verified:
                 ssot.apply_verified_aam("underwriting", verified)
                 st.markdown(f"📌 Applied **{len(verified)}** human-verified value(s).")
-            status.update(label="Verified & ingested", state="complete")
+
+            # Stage 2: trace formulas out from the verified anchors to reach
+            # related (non-AAM) metrics. Additive enrichment — never blocks.
+            try:
+                status.update(label="Tracing formulas from verified cells…")
+                from formula_tracer import trace_from_verified, FORMULA_TRACER_VERSION
+                anchors = {
+                    n: r for n, r in st.session_state.aam_records.items()
+                    if r.get("status") != "missing"
+                }
+                trace = trace_from_verified(UPLOAD_DIR / files[0], anchors)
+                trace["version"] = FORMULA_TRACER_VERSION
+                ssot.attach_formula_trace("underwriting", trace)
+                n_reached = len(trace.get("reached_metrics", {}))
+                if n_reached:
+                    st.markdown(f"🔗 Traced **{n_reached}** related metric(s) from verified cells.")
+            except Exception as e:
+                st.caption(f"(Formula trace skipped: {e})")
+
+            status.update(label="Verified, ingested & traced", state="complete")
 
     st.session_state.aam_confirmed_batches.add(batch_id)
     st.rerun()

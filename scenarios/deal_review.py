@@ -35,124 +35,57 @@ UPLOAD_DIR = Path("uploads")
 
 
 SYSTEM_PROMPT = """\
-You are a senior real estate investment professional writing an acquisition memo.
-The user is an institutional asset manager evaluating whether to fund this deal.
+You are a senior real estate investment professional. The user is an
+institutional asset manager who has ALREADY reviewed and verified the deal's
+core facts in an audit appendix (a human-in-the-loop verification gate). Your
+job now is to write the deal's SNAPSHOT — a tight elevator pitch — and nothing
+else.
 
-You have FOUR inputs:
-  1. ANALYST CHECKLIST — BOUNDED METRICS (PRIMARY): the 25 metrics on an analyst's
-     deal-review checklist, each carrying a status:
-       VERIFIED        — single high-confidence candidate; safe to cite as fact.
-       CANDIDATE_POOL  — multiple candidates passed validation; top-ranked taken.
-                         Cite with cell reference; do NOT add editorial certainty.
-       SUSPICIOUS      — failed schema validation. DO NOT cite as fact. Represent
-                         in memo as "data quality issue" or omit field.
-       MISSING         — no candidate found. Represent as "—" or omit field.
-  2. LEGACY CATALOG FACTS — non-bounded metrics with cell references. Secondary
-     source, only used for metrics not in the bounded checklist.
-  3. PASS 2 INFERRED FIELDS — fields GPT inferred at ingest (property type, deal
-     type, total debt). Note as "(inferred)" when cited.
-  4. TIME SERIES — multi-year projections (NOI, revenue, expenses, cash flow)
-     showing how the deal evolves. Use these for the NOI / cash flow trajectory.
+You have these inputs:
+  1. BOUNDED METRICS (PRIMARY): the analyst checklist. Many carry
+     status=verified with `human-verified` — these were confirmed by the user
+     and are the most trustworthy facts you have; cite them plainly. Statuses:
+       VERIFIED        — safe to cite as fact (human-verified ones especially).
+       CANDIDATE_POOL  — top-ranked of several; cite with cell ref, no certainty.
+       SUSPICIOUS      — DO NOT cite the value. Omit or note "data quality issue".
+       MISSING         — no value. Omit the field. Never invent.
+  2. FORMULA-TRACED METRICS: non-checklist facts reached by following formulas
+     out from the verified cells (e.g. revenue/expense detail, equity split).
+     These are model-derived; cite with their cell reference when useful.
+  3. LEGACY CATALOG FACTS + PASS 2 INFERRED FIELDS: secondary. Note inferred
+     fields as "(inferred)".
+  4. TIME SERIES: multi-year NOI / revenue / cash-flow trajectory.
 
 CITATION RULES (NON-NEGOTIABLE):
-- VERIFIED and CANDIDATE_POOL bounded metrics: cite with cell reference
+- VERIFIED / CANDIDATE_POOL / traced metrics: cite with cell ref, e.g.
   "$192M (General Information!C11)".
-- SUSPICIOUS bounded metrics: NEVER cite the value. Note as "data quality issue"
-  or omit the field entirely. The user is alerted via the audit-trail section.
-- MISSING bounded metrics: write "—" or omit the field. Never invent.
-- Inferred (Pass 2) fields: cite as "Multifamily (inferred)" — no cell ref.
+- SUSPICIOUS: never cite the value. MISSING: omit. Inferred: mark "(inferred)".
+- Never invent a number. If you don't have it, leave it out.
 
-YOUR JOB: write a SIMPLE deal memo. Four sections only: Snapshot,
-Business Plan, Risks, Audit Appendix. The user will request deep dives
-(capital structure, cash flow, returns, capex) via separate buttons — do NOT
-include those sections in this output.
-
-STYLE RULES:
-- Snapshot: 3-5 sentences. Business Plan: EXACTLY 2 bullets. Risks: EXACTLY 2 bullets. Appendix: data only.
-- Total output target: 250-400 words. Tight, executive-style.
-- Use markdown.
-- For Data Appendix metrics that are missing/suspicious, follow the explicit
-  formatting rules below — do not silently omit them, the appendix is the audit.
-
-STRUCTURE (write ONLY these four sections):
+OUTPUT — write EXACTLY one section, nothing before or after it:
 
 ## Snapshot
-One concise paragraph (3-5 sentences). Cover: asset name + property type (with
-number of properties if portfolio), location, size (units / SF / keys),
-acquisition date, purchase price, target hold, headline return (Levered IRR).
-This is the elevator pitch. No filler.
+First, ONE concise paragraph (3-5 sentences): asset name + property type (with
+number of properties if a portfolio), location, size (units / SF / keys),
+acquisition date, purchase price, target hold, and the headline return
+(Levered IRR). This is the elevator pitch — no filler.
 
-## Business Plan
-EXACTLY 2 sentences, bullet style. No paragraphs.
-- Bullet 1: opportunity framing — what type of asset, what market, what makes
-  it attractive in one sentence. Example: "Opportunity to invest in well-located
-  Class-A multifamily in Glendale, CA submarket with strong rent fundamentals."
-- Bullet 2: strategy + lever — Core / Core-Plus / Value-Add / Opportunistic /
-  Ground-up Development, plus the specific value creation lever in one
-  sentence. Example: "Value-Add play leveraging unit renovations and lease-up
-  of vacant inventory to drive ~$2.5M NOI uplift."
+Then, under a bold `**Business Plan**` line, EXACTLY 2 bullets:
+- Bullet 1 — opportunity framing: what asset, what market, what makes it
+  attractive, in one sentence. e.g. "Well-located Class-A multifamily in the
+  Glendale, CA submarket with strong rent fundamentals."
+- Bullet 2 — strategy + lever: Core / Core-Plus / Value-Add / Opportunistic /
+  Ground-up Development, plus the specific value-creation lever, in one
+  sentence. e.g. "Value-Add via unit renovations and lease-up of vacant
+  inventory to drive ~$2.5M NOI uplift."
 
-## Risks
-EXACTLY 2 bullets. Use verified facts, source-audited issues, and Pass 2
-observations. Do not cite missing/suspicious values as facts.
-- Bullet 1: execution or underwriting risk.
-- Bullet 2: financing, exit, market, or data-quality risk.
+STYLE: markdown, tight, executive. Target 120-200 words total. Do NOT write
+Risks, Audit Appendix, Capital Structure, Cash Flow, Return Profile, or CapEx
+— those are on-demand analyses the user triggers separately.
 
-## Audit Appendix
-Render exactly these rows in this exact order. Use the DISPLAY LABEL on the
-left (left of the arrow) as the line label — never write the word "Metric".
-Pull the value from the bounded metric named on the right of the arrow.
-
-Each line format:
-  `**<Display Label>**: <display value> (<sheet>!<cell>)`   if verified/inferred/candidate_pool
-  `**<Display Label>**: — (data quality issue)`             if suspicious
-  `**<Display Label>**: —`                                  if missing
-
-  Property Name        ← Asset Name
-  Number of Properties ← Number of Properties
-  Property Type        ← Property Type
-  Location             ← Location
-  Total SF             ← Total SF
-  Total Units          ← Total Units
-  Acquisition Date     ← Purchase Date
-  Purchase Price       ← Purchase Price
-  Total Project Cost   ← Total Project Cost
-  Exit Date            ← Exit Date
-  Exit Price           ← Exit Value / Terminal Value
-  Hold Period          ← Hold Period
-  Debt                 ← Debt Amount (acquisition/initial loan). If a
-                         Construction Loan is also present, show BOTH on
-                         separate lines: "Acquisition Loan: $X" and
-                         "Construction Loan: $Y" — conversion/dev deals carry
-                         both tranches (the construction loan funds the project
-                         and repays the bridge).
-  Leverage             ← Original LTV if present, ELSE Loan-to-Cost (LTC).
-                         Label it "LTV: X%" or "LTC: X%" accordingly. Dev /
-                         value-add deals are financed on cost (LTC); stabilized
-                         acquisitions use LTV. Show whichever the model has; if
-                         both, show both.
-  Interest Rate        ← Interest Rate (see floating-rate rule below)
-  Unlevered IRR        ← Unlevered IRR
-  Levered IRR          ← Levered IRR
-  Exit Cap Rate        ← Exit Cap Rate (if status is "not_applicable", show
-                         "N/A" — dev/conversion deals have no going-in cap and
-                         may express returns differently; never invent it)
-
-CONFLICT RULE:
-If a metric's status is "conflict" (two authoritative sources disagree), show
-both with a ⚠ flag:
-  `**<Label>**: ⚠ CONFLICT — $X (Sheet1!Cell1) vs $Y (Sheet2!Cell2)`
-Never silently pick one.
-
-FLOATING-RATE INTEREST DISPLAY RULE:
-If Interest Rate Spread AND Interest Rate Cap are both populated, the debt is
-FLOATING. Display Interest Rate as:
-  `Interest Rate: <Spread>% spread + <Cap>% cap → <Spread+Cap>% max (Sheet!Cell)`
-Otherwise display Interest Rate as a single rate.
-
-DO NOT WRITE other sections in this output. Capital Structure, Cash Flow,
-Return Profile, and CapEx Plan are on-demand deep-dives the user will request
-via separate buttons. Do not generate them here.
+FLOATING-RATE NOTE: if Interest Rate Spread AND Interest Rate Cap are both
+present the debt is floating; if you mention the rate, express it as
+"<Spread>% spread + <Cap>% cap" rather than a single fixed rate.
 """
 
 
@@ -324,6 +257,32 @@ def _format_bounded_metrics(bounded: dict) -> str:
     return "\n".join(lines).strip()
 
 
+def _format_traced_metrics(trace: dict) -> str:
+    """Render Stage-2 formula-traced metrics (reached from verified anchors)."""
+    reached = (trace or {}).get("reached_metrics", {}) or {}
+    if not reached:
+        return "(no formula-traced metrics — trace did not run or reached nothing)"
+    lines = []
+    for m in reached.values():
+        val = m.get("value")
+        if isinstance(val, (int, float)):
+            if abs(val) >= 1_000_000:
+                vs = f"${val/1_000_000:.2f}M"
+            elif abs(val) >= 1_000:
+                vs = f"${val:,.0f}"
+            elif abs(val) < 1 and val != 0:
+                vs = f"{val:.2%}"
+            else:
+                vs = f"{val:,.2f}"
+        else:
+            vs = str(val)
+        lines.append(
+            f"  - **{m['metric_name']}**: {vs}  ({m['source']}) "
+            f"— traced from {m.get('via_anchor')}"
+        )
+    return "\n".join(lines)
+
+
 def _format_pass2_fields(raw_insights: dict) -> str:
     """Render Pass 2 found fields as a list."""
     if not raw_insights:
@@ -384,6 +343,9 @@ def generate_deal_review() -> dict[str, Any]:
     bounded_metrics = underwriting.get("bounded_metrics", {}) or {}
     business_plan_patterns = build_runtime_knowledge_block(["business_plan"])
 
+    # Stage 2 — formula-traced metrics reached from the verified anchors
+    formula_trace = underwriting.get("formula_trace", {}) or {}
+
     # Build the user prompt
     user_prompt = f"""\
 ASSET: {source_file or 'Unknown'}
@@ -396,6 +358,10 @@ These 25 metrics are the analyst's deal-review checklist, each schema-validated
 with explicit provenance. Status-based citation rules apply (see system prompt).
 
 {_format_bounded_metrics(bounded_metrics)}
+
+===== FORMULA-TRACED METRICS (Stage 2 — reached from verified anchors; cite with cell ref) =====
+
+{_format_traced_metrics(formula_trace)}
 
 ===== LEGACY CATALOG FACTS (secondary — use only for metrics not in the bounded list above) =====
 
@@ -415,9 +381,9 @@ with explicit provenance. Status-based citation rules apply (see system prompt).
 ===== ACTIVE BUSINESS-PLAN KNOWLEDGE PATTERNS (interpretive only; do not create facts) =====
 {business_plan_patterns or '(no active business-plan patterns)'}
 
-Now write the deal memo following the structure in your system prompt.
-Adapt sections to this deal's type. Be specific. Cite cell references where
-catalog facts are used. NEVER cite SUSPICIOUS or MISSING values as fact.
+Now write ONLY the Snapshot section (paragraph + 2 Business Plan bullets) per
+your system prompt. Prefer human-verified facts. Be specific. Cite cell
+references where facts are used. NEVER cite SUSPICIOUS or MISSING values as fact.
 """
 
     narrative = complete(SYSTEM_PROMPT, user_prompt, temperature=0.2)

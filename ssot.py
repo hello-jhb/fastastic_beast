@@ -263,6 +263,33 @@ def apply_verified_aam(
     return ssot
 
 
+def attach_formula_trace(
+    layer: str,
+    trace: dict[str, Any],
+    ssot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Store a compact Stage-2 formula trace on a layer (additive enrichment).
+
+    Keeps `reached_metrics` + summary counts; drops the full per-cell list to
+    keep the SSOT lean. Does not touch bounded_metrics or verified facts.
+    """
+    if ssot is None:
+        ssot = load_ssot()
+    lyr = ssot["layers"].get(layer)
+    if not lyr:
+        return ssot
+    lyr["formula_trace"] = {
+        "version":         trace.get("version"),
+        "seeds":           trace.get("seeds", 0),
+        "cells_visited":   len(trace.get("traced_cells", [])),
+        "reached_metrics": trace.get("reached_metrics", {}),
+        "traced_at":       _now_iso(),
+    }
+    save_ssot(ssot)
+    return ssot
+
+
 def update_identity(
     fields: dict[str, Any],
     ssot: dict[str, Any] | None = None,
