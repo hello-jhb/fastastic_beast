@@ -100,7 +100,14 @@ ARITHMETIC IDENTITIES (a correct extraction satisfies these):
 # ---------------------------------------------------------------------------
 SHEET_ROLE_VOCAB = """\
 SHEET ROLES (classify each sheet by what it CONTAINS, not its name):
-  summary       — deal-level summary / one-pager / key UW metrics / general info
+  one_pager     — THE single deal one-pager / investment summary page: the
+                  headline page an analyst reads first, carrying the core deal
+                  metrics together (price, NOI, returns, debt, sources & uses).
+                  This is the MOST authoritative summary. Use this role for the
+                  deal's primary summary page only.
+  summary       — secondary / supporting summary tabs: general information,
+                  key UW metrics, output dashboards. Authoritative but ranked
+                  BELOW the one_pager and the inputs/assumptions tab.
   inputs        — assumptions / inputs tab driving the model (rent, growth,
                   unit mix, purchase price, debt terms entered as assumptions)
   cash_flow     — multi-year operating proforma (revenue, expenses, NOI by year)
@@ -118,27 +125,47 @@ SHEET ROLES (classify each sheet by what it CONTAINS, not its name):
 
 # Map each sheet role to the extraction priority tier it implies.
 # Used when GPT classification overrides the name-based tier guess.
+# Map each sheet role to the extraction priority tier it implies (lower = higher
+# priority). Ordered so an analyst's reading order is honored: the deal one-pager
+# first, then the inputs/assumptions that drive the model, THEN secondary summary
+# tabs (general info / key UW metrics). This split fixes the prior bug where
+# one-pager, general-info and key-UW were a single tier-1 bucket, so the sheet
+# with the cleanest atomic labels (usually Key UW Metrics) silently won every tie.
 ROLE_TO_TIER: dict[str, int] = {
-    "summary":      1,
-    "inputs":       1,   # assumptions/inputs tab is authoritative for deal basis
-    "sources_uses": 1,   # sources & uses is authoritative for basis/debt/equity
-    "cash_flow":    2,
-    "capex":        3,
-    "debt":         4,
-    "returns":      5,
-    "rent_roll":    6,
-    "market":       6,
-    "other":        6,
+    "one_pager":    1,   # THE deal summary page — read first, most authoritative
+    "inputs":       2,   # assumptions/inputs tab is authoritative for deal basis
+    "sources_uses": 2,   # sources & uses is authoritative for basis/debt/equity
+    "summary":      3,   # secondary summary: general info / key UW metrics
+    "cash_flow":    4,
+    "capex":        5,
+    "debt":         6,
+    "returns":      7,
+    "rent_roll":    8,
+    "market":       8,
+    "other":        8,
     # Roles we intentionally skip during bulk extraction (would pollute metrics)
     "comps":        99,
     "sensitivity":  99,
     "backup":       99,
 }
 
+# A one_pager is a specialization of summary for SOURCE-HIERARCHY purposes: the
+# catalog's source_primary / source_forbidden lists (authored in the xlsx) use
+# 'summary', so a value found on the one-pager must satisfy any rule written for
+# 'summary'. Consumers normalize a role through this map before membership tests.
+ROLE_HIERARCHY_EQUIV: dict[str, str] = {"one_pager": "summary"}
+
+
+def hierarchy_role(role: str | None) -> str | None:
+    """Normalize a sheet role for source_primary / source_forbidden membership."""
+    return ROLE_HIERARCHY_EQUIV.get(role, role) if role else role
+
+
 # Canonical role list (for validation of catalog source-hierarchy entries)
 ALL_ROLES = [
-    "summary", "inputs", "sources_uses", "cash_flow", "capex", "debt",
-    "returns", "rent_roll", "comps", "sensitivity", "backup", "market", "other",
+    "one_pager", "summary", "inputs", "sources_uses", "cash_flow", "capex",
+    "debt", "returns", "rent_roll", "comps", "sensitivity", "backup", "market",
+    "other",
 ]
 
 

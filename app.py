@@ -848,28 +848,34 @@ def _aam_source(rec: dict) -> str:
 
 
 def _aam_editable_value(rec: dict) -> str:
-    """Seed value for the editable column: raw number string, or '' if missing."""
-    if rec.get("status") == "missing":
+    """
+    Seed for the single editable Value column: the FORMATTED display the human
+    reads (e.g. "$192.00M", "8.17%", "2.00x"), or '' when missing/blank so the
+    cell shows empty and invites a fill. (The separate raw Value column was
+    removed — Display is what the analyst verifies.)
+    """
+    if rec.get("status") == "missing" or rec.get("normalized_value") is None:
         return ""
-    nv = rec.get("normalized_value")
-    return "" if nv is None else str(nv)
+    return rec.get("display_value") or "—"
 
 
 def _coerce_value(rec: dict, s: str):
     """
     Turn an edited string into a stored value.
 
-    Returns (value, ok). For numeric metrics that fail to parse we keep the
-    original normalized value (ok=False) so a typo can never feed a string into
-    downstream arithmetic.
+    The editable column now shows the FORMATTED value, so the parser must invert
+    the display: "8.17%" -> 0.0817, "$192.00M" -> 192000000, "2.00x" -> 2.0,
+    "1.0 years" -> 1.0. parse_numeric_value (the same routine used for GPT output)
+    handles all of these. Returns (value, ok); for numeric metrics that fail to
+    parse we keep the original normalized value (ok=False) so a typo can never
+    feed a string into downstream arithmetic.
     """
-    if (rec or {}).get("unit") in _NUMERIC_UNITS:
-        cleaned = s.replace("$", "").replace(",", "").replace("%", "").replace("x", "").strip()
-        try:
-            return float(cleaned), True
-        except ValueError:
-            return (rec or {}).get("normalized_value"), False
-    return s, True
+    from metric_resolver import parse_numeric_value
+    unit = (rec or {}).get("unit")
+    value, ok = parse_numeric_value(s, unit)
+    if unit in _NUMERIC_UNITS and not ok:
+        return (rec or {}).get("normalized_value"), False
+    return value, ok
 
 
 def _collect_verified(records: dict, edited) -> dict:
@@ -879,16 +885,34 @@ def _collect_verified(records: dict, edited) -> dict:
         name = row["Metric"]
         rec = records.get(name) or {}
         val_str = str(row["Value"] or "").strip()
-        if val_str == "":
+        if val_str in ("", "—"):
             continue  # left blank → stays missing, not asserted
         value, ok = _coerce_value(rec, val_str)
-        unchanged = str(value) == str(rec.get("normalized_value"))
+        # Change detection. The column shows the rounded display (e.g. "8.17%"),
+        # so coercing it back won't EXACTLY equal the stored normalized value
+        # (0.081650…). Treat unchanged if either (a) the text matches the shown
+        # display verbatim — covers an untouched cell incl. dates/text — or
+        # (b) the parsed number agrees within tolerance (covers a re-typed
+        # equivalent like "192000000" for "$192.00M"). Otherwise it's a real edit.
+        from metric_resolver import _values_disagree
+        shown = rec.get("display_value") or ""
+        unchanged = (
+            val_str == shown
+            or (ok and not _values_disagree(value, rec.get("normalized_value")))
+        )
         if unchanged:
-            note, display = "Human-verified via audit appendix.", row["Display"]
+            # Keep the FULL-PRECISION original — the column only showed a rounded
+            # display, so the re-parsed number would lose precision (0.0817 vs
+            # 0.081650…). Verifying must not silently truncate the stored value.
+            note, display, value = (
+                "Human-verified via audit appendix.",
+                rec.get("display_value") or val_str,
+                rec.get("normalized_value"),
+            )
         elif not ok:
             note = (f"Human entered '{val_str}' but it could not be parsed as a "
                     f"number; kept original {rec.get('normalized_value')}.")
-            display = row["Display"]
+            display = rec.get("display_value") or val_str
         else:
             note = f"Human-corrected via audit appendix (was {rec.get('normalized_value')})."
             display = val_str
@@ -903,6 +927,59 @@ def _collect_verified(records: dict, edited) -> dict:
             "engine_value": rec.get("display_value") or rec.get("normalized_value"),
         }
     return verified
+
+
+_NOI_RULE_IDS = {"net_operating_income_noi", "exit_noi"}
+
+
+def _rederive_noi_from_verified(records: dict, verified: dict) -> None:
+    """
+    Re-derive NOI from the HUMAN-VERIFIED pricing inputs at confirm time.
+
+    NOI is derived from pricing at extraction, but the human may correct the
+    price / cap / exit value at the gate. This overlays the verified values onto
+    a copy of the AAM records, re-runs the pricing derivation, and folds the
+    refreshed NOI back into `verified` so the persisted SSOT reflects the
+    corrected inputs. A NOI the human edited directly is left as their value.
+
+    Mutates `verified` in place.
+    """
+    import copy
+    from aam_extractor import _derive_noi_from_pricing, _by_id
+
+    overlay = copy.deepcopy(records)
+    # Apply each verified value onto the overlay (human confirmation → verified).
+    for name, v in verified.items():
+        rec = overlay.get(name)
+        if rec is None:
+            continue
+        rec["normalized_value"] = v.get("value")
+        rec["status"] = "verified"
+
+    # Respect a NOI the human explicitly corrected — don't re-derive over it.
+    skip = {
+        v.get("metric_id")
+        for v in verified.values()
+        if v.get("corrected") and v.get("metric_id") in _NOI_RULE_IDS
+    }
+    _derive_noi_from_pricing(overlay, skip_ids=skip)
+
+    # Fold the refreshed NOI values back into `verified`.
+    for noi_id in _NOI_RULE_IDS - skip:
+        rec = _by_id(overlay, noi_id)
+        if not rec or rec.get("status") != "derived":
+            continue
+        verified[rec["metric_name"]] = {
+            "value":        rec.get("normalized_value"),
+            "display":      rec.get("display_value"),
+            "source_sheet": None,
+            "source_cell":  rec.get("source_cell"),  # the identity formula
+            "note":         (rec.get("validation_notes") or
+                             ["Derived from verified pricing."])[0],
+            "metric_id":    noi_id,
+            "corrected":    False,
+            "engine_value": rec.get("display_value"),
+        }
 
 
 def _render_aam_gate(agent: AgentSession) -> None:
@@ -956,8 +1033,6 @@ def _render_aam_gate(agent: AgentSession) -> None:
             "Group":   aam.group_of(mid) or "",
             "Metric":  rec.get("metric_name", mid),
             "Value":   _aam_editable_value(rec),
-            "Display": rec.get("display_value") or "—",
-            "Period":  rec.get("table_periodicity") or "—",
             "Source":  source,
             "Status":  rec.get("status", "missing"),
         })
@@ -967,10 +1042,12 @@ def _render_aam_gate(agent: AgentSession) -> None:
         key=f"aam_editor_{abs(hash(batch_id))}_{st.session_state.aam_fill_version}",
         width="stretch",
         hide_index=True,
-        disabled=["Group", "Metric", "Display", "Period", "Source", "Status"],
+        disabled=["Group", "Metric", "Source", "Status"],
         column_config={
             "Value": st.column_config.TextColumn(
-                "Value (editable)", help="Correct the value if it's wrong. Numbers are raw (unformatted)."
+                "Value (editable)",
+                help="The formatted value Collie extracted. Correct it inline if "
+                     "it's wrong (e.g. type $150M, 7.5%, 2.1x, or a plain number).",
             ),
         },
     )
@@ -1033,6 +1110,10 @@ def _confirm_aam_and_ingest(agent: AgentSession, verified: dict) -> None:
                 else:
                     st.markdown(f"✅ **{fn}** → `underwriting` ({result['metric_count']} metrics)")
             if verified:
+                # Re-derive NOI from the human-verified pricing inputs (the cap /
+                # price / exit value may have been corrected at the gate) before
+                # persisting, so NOI always reflects the confirmed pricing.
+                _rederive_noi_from_verified(st.session_state.aam_records, verified)
                 ssot.apply_verified_aam("underwriting", verified)
                 st.markdown(f"📌 Applied **{len(verified)}** human-verified value(s).")
                 # NOTE: learning-capture (override → observation → candidate) is

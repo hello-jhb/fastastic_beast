@@ -144,7 +144,7 @@ def classify_sheets(file_path: Path) -> dict[str, dict]:
         result[name] = {
             "role":         role,
             "confidence":   conf,
-            "implied_tier": ROLE_TO_TIER.get(role, 6),
+            "implied_tier": ROLE_TO_TIER.get(role, 8),
         }
 
     log.info(
@@ -196,13 +196,23 @@ def nominate_authoritative_tabs(
         # returns 0/3.) 3 keeps the authoritative source plus two backups.
         nominated[role] = [name for _, name in entries][:3]
 
+    # The catalog's source_primary lists (authored in the xlsx) use 'summary',
+    # not the finer 'one_pager' role. Fold one_pager tabs into the 'summary'
+    # nomination — FIRST, so the deal one-pager is the preferred summary source —
+    # so metrics whose hierarchy says 'summary' actually read the one-pager.
+    if nominated.get("one_pager"):
+        merged = nominated["one_pager"] + [
+            s for s in nominated.get("summary", []) if s not in nominated["one_pager"]
+        ]
+        nominated["summary"] = merged[:3]
+
     # Fallback authoritative pool — used when a metric's preferred roles map to
     # NO nominated tab (the classifier didn't confidently assign that role).
     # Without this, on complex models property metrics SKIP with "no target
     # sheets matched preferred list" and go silently missing. We surface the
-    # highest-confidence summary/inputs/sources_uses tabs as a catch-all.
+    # highest-confidence one-pager/summary/inputs/sources_uses tabs as a catch-all.
     catch_all: list[str] = []
-    for role in ("summary", "inputs", "sources_uses"):
+    for role in ("one_pager", "summary", "inputs", "sources_uses"):
         catch_all.extend(nominated.get(role, []))
     # de-dupe preserving order
     seen = set()

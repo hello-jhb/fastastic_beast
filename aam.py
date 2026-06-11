@@ -22,11 +22,20 @@ from __future__ import annotations
 AAM_GROUPS: dict[str, list[str]] = {
     "Identity": ["asset_name", "property_type", "location", "total_units", "total_sf"],
     "Basis":    ["purchase_price", "total_project_cost", "going_in_cap_rate"],
-    "Income":   ["net_operating_income_noi"],
+    # Going-in NOI (net_operating_income_noi) and Exit NOI are kept as SEPARATE
+    # fields: a single NOI row let the engine surface the exit/stabilized column
+    # (the higher number) as "the" NOI. Separating them makes the human verify
+    # each, and the distinct aliases (Exit/Sale/Terminal NOI) steer the resolver
+    # to the right cell for each.
+    "Income":   ["net_operating_income_noi", "exit_noi"],
     "Debt":     ["debt_amount", "original_ltv", "interest_rate",
                  "interest_rate_spread", "interest_rate_cap"],
     "Timing":   ["purchase_date", "hold_period", "exit_date"],
-    "Return":   ["exit_cap_rate", "levered_irr", "equity_multiple"],
+    # Exit Value is the exit-side pricing anchor: Exit NOI is DERIVED from it
+    # (Exit NOI = Exit Value × Exit Cap Rate), mirroring going-in NOI = Purchase
+    # Price × Going-in Cap Rate. See _derive_noi_from_pricing in aam_extractor.
+    "Return":   ["exit_value_terminal_value", "exit_cap_rate",
+                 "levered_irr", "equity_multiple"],
 }
 
 # Flat ordered list of AAM metric_ids (canonical extraction / display order).

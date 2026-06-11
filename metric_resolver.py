@@ -219,12 +219,14 @@ def resolve_metric(metric: dict, candidates: list[dict]) -> dict:
 
     # Sort by:
     #   1. preferred_sheet_score (lower is better)
-    #   2. sheet_tier (lower is better)
-    #   3. extractor confidence
+    #   2. sheet_tier (effective, lower is better)
+    #   3. name_tier (one-pager beats secondary summaries on equal effective tier)
+    #   4. extractor confidence
     _CONF_TIER = {"exact": 0, "high": 1, "medium": 2, "partial": 3}
     pool.sort(key=lambda s: (
         s["pref_score"],
         s["candidate"].get("sheet_tier", 99),
+        s["candidate"].get("name_tier", 99),
         _CONF_TIER.get(s["candidate"]["confidence"], 9),
         -s["candidate"].get("label_ratio", 0),
     ))
@@ -453,6 +455,10 @@ def build_section_record(metric: dict, extraction: dict, sheet_role_map: dict | 
     sheet = extraction.get("sheet")
     cell  = extraction.get("cell")
     role  = _role_of_sheet(sheet, sheet_role_map)
+    # Normalize one_pager -> summary for source_primary / source_forbidden
+    # membership: catalog hierarchy lists (authored in the xlsx) use 'summary'.
+    from re_knowledge import hierarchy_role
+    h_role = hierarchy_role(role)
     reasoning = extraction.get("reasoning", "")
     observed_period = extraction.get("period") or extraction.get("column_header")
 
@@ -472,7 +478,7 @@ def build_section_record(metric: dict, extraction: dict, sheet_role_map: dict | 
 
     # Gate 2 — forbidden source
     forbidden = metric.get("source_forbidden") or []
-    if role and role in forbidden:
+    if h_role and h_role in forbidden:
         audit["rejected"].append({
             "value": raw_value, "cell": cell, "sheet": sheet, "role": role,
             "reason": f"forbidden source role '{role}' for this metric",
@@ -485,7 +491,7 @@ def build_section_record(metric: dict, extraction: dict, sheet_role_map: dict | 
     # pulled NOI off a debt tab) is rejected → proximity fallback. If the
     # sheet role is unknown (classification gap), we allow it but note it.
     primary = metric.get("source_primary") or []
-    if primary and role is not None and role not in primary:
+    if primary and h_role is not None and h_role not in primary:
         audit["rejected"].append({
             "value": raw_value, "cell": cell, "sheet": sheet, "role": role,
             "reason": f"role '{role}' is not a primary source {primary} for this metric",

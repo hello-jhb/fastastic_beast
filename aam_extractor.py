@@ -113,6 +113,11 @@ def extract_aam(
     # input the user is about to correct.
     _normalize_aam(records)
 
+    # Drive NOI from the pricing identity (NOI = Price × Cap) rather than trust a
+    # cell-matched NOI, which grabs the wrong period/column. Runs after blank-fill
+    # too (via fill_aam_blanks) so newly-filled price/cap inputs feed the derive.
+    _derive_noi_from_pricing(records)
+
     return records
 
 
@@ -138,6 +143,8 @@ def fill_aam_blanks(file_path: str | Path, records: dict[str, Any]) -> int:
         return 0
     filled = _focused_gap_fill(Path(file_path), gaps, records)
     _normalize_aam(records)
+    # Re-derive NOI now that blank-fill may have supplied missing price/cap inputs.
+    _derive_noi_from_pricing(records)
     return filled
 
 
@@ -225,7 +232,12 @@ def _focused_gap_fill(
         prev_status = records[m["metric_name"]]["status"]
         rec = resolve_metric(m, [candidate])
         # Only accept the GPT value if it actually validated to something usable.
-        if rec["status"] in ("missing",):
+        # Reject "suspicious" too: that means the value failed schema-range
+        # validation (e.g. GPT grabbed the $192M purchase-price cell for Total SF,
+        # which is far outside the SF range). A blank the human can fill is better
+        # than a confident-looking out-of-range number. The field keeps its prior
+        # (missing/blank) state rather than absorbing the bad fill.
+        if rec["status"] in ("missing", "suspicious"):
             continue
         rec.setdefault("validation_notes", []).insert(
             0,
@@ -393,12 +405,36 @@ def _normalize_aam(records: dict[str, Any]) -> None:
         if v is None:
             v = _as_num(hp.get("raw_value"))
         if v is not None and v > 0:
-            interp = _interpret_hold_value(v, _derived_hold_years(records))
+            derived = _derived_hold_years(records)
+            interp = _interpret_hold_value(v, derived)
             if interp:
                 years, note = interp
                 hp["normalized_value"] = years
                 hp["display_value"] = f"{years:.1f} years"
                 hp.setdefault("validation_notes", []).insert(0, note)
+
+            # Sanity cross-check: if Purchase->Exit dates derive a hold the
+            # extracted value disagrees with under BOTH the years AND the months
+            # reading (even after conversion), the extracted cell is probably the
+            # wrong one (e.g. a "Year 1" index, not the hold). Flag suspicious so
+            # the human corrects it instead of trusting a wrong number. We do NOT
+            # overwrite the value (dates may be unverified) — only surface it.
+            if derived is not None and derived > 0:
+                final_v = _as_num(hp.get("normalized_value")) or v
+                best_err = min(
+                    abs(final_v - derived),
+                    abs(v - derived),
+                    abs(v / 12.0 - derived),
+                )
+                if best_err / derived > 0.2:
+                    hp["status"] = "suspicious"
+                    hp.setdefault("validation_notes", []).insert(
+                        0,
+                        f"Hold Period {v:g} disagrees with the Purchase->Exit "
+                        f"span (~{derived:.1f} years). The extracted cell may be "
+                        f"wrong (e.g. a period index). Suggested: "
+                        f"{derived:.1f} years."
+                    )
 
     # Equity Multiple: always render as a multiplier.
     em = records.get("Equity Multiple")
@@ -406,6 +442,102 @@ def _normalize_aam(records: dict[str, Any]) -> None:
         v = _as_num(em.get("normalized_value"))
         if v is not None:
             em["display_value"] = f"{v:.2f}x"
+
+
+def _by_id(records: dict[str, Any], metric_id: str) -> dict[str, Any] | None:
+    """Find an AAM record by metric_id (records are keyed by metric_name)."""
+    for rec in records.values():
+        if rec.get("metric_id") == metric_id:
+            return rec
+    return None
+
+
+def _derive_noi_from_pricing(
+    records: dict[str, Any],
+    skip_ids: set[str] | None = None,
+) -> None:
+    """
+    Drive NOI from the cap-rate identity (Price = NOI / Cap Rate), in place.
+
+    An analyst reads NOI OUT of pricing, not the other way around: cell-matching
+    grabs whichever NOI column it finds first (usually the exit/stabilized one,
+    the higher number), which is why going-in and exit NOI collided on one cell.
+    Deriving from price × cap is both more reliable and ties the appendix's NOI
+    to the price and cap rate the human is verifying right beside it.
+
+        Going-in NOI = Purchase Price × Going-in Cap Rate
+        Exit NOI     = Exit Value     × Exit Cap Rate
+
+    Best-effort and self-checking:
+      - derives only when BOTH pricing inputs resolved to a usable value;
+      - the COMPUTED NOI is range-checked against its own catalog schema, so a
+        bad input (e.g. a cap that actually matched the NOI cell) yields an
+        out-of-range product and is rejected rather than written;
+      - a NOI whose id is in `skip_ids` is left untouched — used at confirm time
+        when the human explicitly corrected the NOI itself (their value wins);
+      - when a derived value disagrees with the extracted one by >10%, the note
+        flags the extracted cell as the likely wrong period/column.
+    """
+    from metric_resolver import _format_display
+
+    skip_ids = skip_ids or set()
+    schema_by_id = {m["metric_id"]: m for m in load_metric_catalog()}
+
+    # Only derive from a pricing input that actually validated. A 'suspicious'
+    # value failed schema-range (e.g. BAC's going-in cap matched the $15.6M NOI
+    # cell, not the 8.17% rate cell, before GPT fill) — feeding it would produce
+    # a nonsense NOI. Better to leave the extracted NOI until the input is fixed.
+    _USABLE = {"verified", "derived", "candidate_pool", "inferred"}
+
+    def _num(rec: dict | None) -> float | None:
+        if not rec or rec.get("status") not in _USABLE:
+            return None
+        v = _as_num(rec.get("normalized_value"))
+        return v if (v is not None and v > 0) else None
+
+    def _in_range(metric_id: str, value: float) -> bool:
+        schema = schema_by_id.get(metric_id, {})
+        lo, hi = schema.get("range_min"), schema.get("range_max")
+        if lo is not None and value < lo:
+            return False
+        if hi is not None and value > hi:
+            return False
+        return True
+
+    # (derived NOI id, price-input id, cap-input id, human-readable formula)
+    rules = [
+        ("net_operating_income_noi", "purchase_price", "going_in_cap_rate",
+         "Purchase Price × Going-in Cap Rate"),
+        ("exit_noi", "exit_value_terminal_value", "exit_cap_rate",
+         "Exit Value × Exit Cap Rate"),
+    ]
+    for noi_id, price_id, cap_id, formula in rules:
+        if noi_id in skip_ids:
+            continue
+        noi = _by_id(records, noi_id)
+        if noi is None:
+            continue
+        price = _num(_by_id(records, price_id))
+        cap = _num(_by_id(records, cap_id))
+        if price is None or cap is None:
+            continue  # missing a pricing input — leave the extracted NOI as-is
+
+        derived = price * cap
+        if not _in_range(noi_id, derived):
+            continue  # nonsense product (bad input) — don't overwrite the NOI
+        prev = _as_num(noi.get("normalized_value"))
+        noi["raw_value"] = derived
+        noi["normalized_value"] = derived
+        noi["display_value"] = _format_display(derived, "USD", None)
+        noi["status"] = "derived"
+        noi["source_sheet"] = None
+        noi["source_cell"] = formula  # shows the identity instead of a cell
+        note = (f"Derived from pricing: {formula} = "
+                f"{price:,.0f} × {cap:.4f} = {derived:,.0f}.")
+        if prev is not None and abs(prev - derived) / max(derived, 1.0) > 0.10:
+            note += (f" Extracted cell showed {prev:,.0f} — likely the wrong "
+                     f"period/column; the pricing identity governs.")
+        noi.setdefault("validation_notes", []).insert(0, note)
 
 
 def _status_counts(records: dict[str, Any]) -> dict[str, int]:

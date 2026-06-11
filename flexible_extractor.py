@@ -78,18 +78,33 @@ def cell_address(row, col):
 #     "Investment Summary", "Summary & Assumptions", etc.)
 
 SHEET_PRIORITY_TIERS: list[tuple[int, list[str]]] = [
-    # Tier 1 — deal-level summary (highest priority)
-    # An analyst reading any UW model goes here first.
+    # Tier 1 — THE deal one-pager / investment summary (highest priority).
+    # The single headline page an analyst reads first. Kept ABOVE general-info
+    # and key-UW-metric tabs: those are secondary summaries (tier 3). Lumping
+    # them together let the cleanest-labeled tab (usually Key UW Metrics) win
+    # every tie and pull facts off the wrong sheet.
     (1, [
-        "summary",          # catches: Deal Summary, Investment Summary, Summary & Assumptions, Executive Summary
         "one pager", "one-pager", "onepager",
+        "investment summary", "deal summary", "executive summary",
         "overview", "snapshot", "dashboard", "highlights",
+    ]),
+    # Tier 2 — inputs / assumptions / sources & uses (the model's drivers).
+    # Authoritative for deal basis, debt terms, and total project cost.
+    (2, [
+        "input", "assumption",
+        "sources and uses", "sources & uses", "sources/uses", "source and use",
+        "sources uses", "uses of funds", "capitalization", "cap table",
+    ]),
+    # Tier 3 — secondary summary tabs (general info / key UW metrics / summary).
+    # Real summaries, but ranked below the one-pager and the inputs tab.
+    (3, [
+        "summary",          # Summary & Assumptions, output summaries, etc.
         "general info",     # catches: General Information
         "key metric", "key uw", "key input", "key assumption",
     ]),
-    # Tier 2 — cash flow projections (the proforma)
+    # Tier 4 — cash flow projections (the proforma)
     # Time-series of revenue, expenses, NOI by year/quarter/month.
-    (2, [
+    (4, [
         "cash flow", "cashflow",
         "proforma", "pro forma", "pro-forma",
         "p&l", "p & l", "pnl",
@@ -97,42 +112,43 @@ SHEET_PRIORITY_TIERS: list[tuple[int, list[str]]] = [
         "annual cf", "monthly cf", "quarterly cf",
         "annual cfs", "monthly cfs",
     ]),
-    # Tier 3 — capital plan
-    (3, [
+    # Tier 5 — capital plan
+    (5, [
         "capex", "cap ex",
         "capital expenditure", "capital plan", "capital budget",
         "hard cost", "soft cost",
         "draw schedule",
         "construction budget", "construction cost",
     ]),
-    # Tier 4 — debt structure
-    (4, [
+    # Tier 6 — debt structure
+    (6, [
         "debt", "loan", "financing", "mortgage",
     ]),
-    # Tier 5 — waterfall / returns
-    (5, [
+    # Tier 7 — waterfall / returns
+    (7, [
         "waterfall", "promote",
         "return profile", "return metrics", "irr", "yield",
     ]),
-    # Tier 6 — everything else (scan but lowest priority)
-    (6, []),
+    # Tier 8 — everything else (scan but lowest priority)
+    (8, []),
 ]
 
 # Short standalone sheet names (exact match against lowercased name).
 # These would miss substring matching but are well-known categorical sheets.
+# Tiers mirror SHEET_PRIORITY_TIERS above (cash_flow=4, capex=5, debt=6, irr=7).
 SHEET_TIER_EXACT: dict[str, int] = {
     # Standalone cash flow / proforma sheets
-    "noi":    2,
-    "cf":     2,
-    "cfs":    2,
-    "pf":     2,   # short for "proforma"
+    "noi":    4,
+    "cf":     4,
+    "cfs":    4,
+    "pf":     4,   # short for "proforma"
     # CapEx
-    "capex":  3,
-    "cap ex": 3,
+    "capex":  5,
+    "cap ex": 5,
     # Debt
-    "debt":   4,
+    "debt":   6,
     # Returns / waterfall
-    "irr":    5,
+    "irr":    7,
 }
 
 # Sheets to SKIP entirely on first-pass extraction.
@@ -669,6 +685,11 @@ def scan_workbook_for_candidates(file_path, catalog, sheet_tier_map: dict | None
 
     for sheet_name in candidate_sheets:
         sheet_tier = _tier_for(sheet_name)
+        # Name-based tier kept alongside the (possibly role-flattened) effective
+        # tier as a tiebreak: when the content classifier roles One Pager and
+        # Key UW Metrics both as 'summary' (same effective tier), the one-pager
+        # NAME still wins over secondary summaries. See SHEET_PRIORITY_TIERS.
+        name_tier = sheet_priority_tier(sheet_name)
         ws = wb[sheet_name]
 
         for row in ws.iter_rows(
@@ -719,6 +740,7 @@ def scan_workbook_for_candidates(file_path, catalog, sheet_tier_map: dict | None
                         "source_file":   file_name,
                         "sheet":         sheet_name,
                         "sheet_tier":    sheet_tier,
+                        "name_tier":     name_tier,
                         "label_cell":    cell.coordinate,
                         "value_cell":    value_cell,
                         "matched_alias": original_alias,
@@ -727,11 +749,15 @@ def scan_workbook_for_candidates(file_path, catalog, sheet_tier_map: dict | None
                         "match_method":  direction,
                     })
 
-    # Sort each metric's candidates by (sheet_tier, confidence_tier, -label_ratio)
+    # Sort by (effective sheet_tier, name_tier, confidence_tier, -label_ratio).
+    # name_tier breaks ties among equal-effective-tier sheets so the one-pager
+    # beats general-info / key-UW metrics tabs even when the classifier roled
+    # them identically as 'summary'.
     _CONF_TIER = {"exact": 0, "high": 1, "medium": 2, "partial": 3}
     for metric_id, cands in candidates_by_metric.items():
         cands.sort(key=lambda x: (
             x.get("sheet_tier", 99),
+            x.get("name_tier", 99),
             _CONF_TIER.get(x["confidence"], 9),
             -x.get("label_ratio", 0),
         ))
