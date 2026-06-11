@@ -141,25 +141,24 @@ Use ONLY the provided metrics with cell references. Cite cell references.
 For floating-rate debt (when Interest Rate Spread + Cap are both present),
 explain the floating structure: spread, cap strike, max effective rate.
 
-Output format (markdown):
+Output format (markdown). Use BULLET POINTS for all figures — NEVER markdown
+tables (they are hard to read in this app):
 
 ## Capital Structure
 
-| Component | Amount | Source |
-|---|---|---|
-| Purchase Price | $X (Sheet!Cell) | ... |
-| Total Project Cost | $X | ... |
-| Acquisition Loan | $X | ... |
-| Construction Loan | $X (only if present — conversion/dev) | ... |
-| Equity Required | $X | ... |
-| LTV or LTC | X% | LTC for cost-financed dev/value-add |
-| Interest Rate | (see floating rule above) | ... |
-| Loan Maturity | X months | ... |
-| I/O Period | X months | ... |
-| DSCR | X.Xx | ... |
-| Debt Yield | X.X% | ... |
+- **Purchase Price:** $X (Sheet!Cell)
+- **Total Project Cost:** $X (Sheet!Cell)
+- **Acquisition Loan:** $X (Sheet!Cell)
+- **Construction Loan:** $X — only if present (conversion/dev)
+- **Equity Required:** $X
+- **LTV or LTC:** X% — LTC for cost-financed dev/value-add
+- **Interest Rate:** (see floating rule above)
+- **Loan Maturity:** X months
+- **I/O Period:** X months
+- **DSCR:** X.Xx
+- **Debt Yield:** X.X%
 
-Omit rows that are missing/N/A rather than showing "—" clutter. If both an
+Omit bullets that are missing/N/A rather than showing "—" clutter. If both an
 acquisition loan and a construction loan are present, note that the
 construction loan funds the project and typically repays the acquisition
 bridge. Then 1-2 sentences on the capital stack's risk/return profile.
@@ -218,15 +217,14 @@ Walk through how NOI evolves:
   - Exit NOI
   - Identify the trajectory shape (flat/growth/dev ramp-up/value-add lift)
 
-Output format (markdown):
+Output format (markdown). Use BULLET POINTS for all figures — NEVER markdown
+tables (they are hard to read in this app):
 
 ## Cash Flow / NOI Trajectory
 
-| Period | NOI | Note |
-|---|---|---|
-| Year 1 (going-in) | $X (Sheet!Cell) | ... |
-| Stabilized | $X | ... |
-| Exit | $X | ... |
+- **Year 1 (going-in) NOI:** $X (Sheet!Cell)
+- **Stabilized NOI:** $X — stabilization year
+- **Exit NOI:** $X
 
 Then 2-3 sentences explaining the trajectory and the drivers.
 Max 250 words total.
@@ -276,19 +274,18 @@ _RETURN_PROFILE_SYSTEM = """\
 You are writing the Return Profile section of a real estate IC memo.
 Use ONLY bounded metrics with cell references.
 
-Output format (markdown):
+Output format (markdown). Use BULLET POINTS for all figures — NEVER markdown
+tables (they are hard to read in this app):
 
 ## Return Profile
 
-| Metric | Value | Source |
-|---|---|---|
-| Levered IRR | X% | (Sheet!Cell) |
-| Unlevered IRR | X% | ... |
-| Equity Multiple | X.Xx | ... |
-| Going-In Cap Rate | X.X% | ... |
-| Exit Cap Rate | X.X% | ... |
-| Exit Value | $X | ... |
-| Hold Period | X years | ... |
+- **Levered IRR:** X% (Sheet!Cell)
+- **Unlevered IRR:** X%
+- **Equity Multiple:** X.Xx
+- **Going-In Cap Rate:** X.X%
+- **Exit Cap Rate:** X.X%
+- **Exit Value:** $X
+- **Hold Period:** X years
 
 Then 2-3 sentences explaining where the return is coming from
 (yield/cap compression/operational uplift/development premium) — based on
@@ -326,22 +323,19 @@ _CAPEX_PLAN_SYSTEM = """\
 You are writing the CapEx Plan section of a real estate IC memo.
 Use the bounded metrics AND any time-series data provided. Cite cell references.
 
-Output format (markdown):
+Output format (markdown). Use BULLET POINTS for all figures — NEVER markdown
+tables (they are hard to read in this app):
 
 ## CapEx Plan
 
-| Item | Amount | Source |
-|---|---|---|
-| Total CapEx Budget | $X (Sheet!Cell) | ... |
-| Total Project Cost | $X | ... |
-| Hold Period | X years | ... |
+- **Total CapEx Budget:** $X (Sheet!Cell)
+- **Total Project Cost:** $X
+- **Hold Period:** X years
 
-If a multi-year draw schedule is in the time series, render it as a small table:
+If a multi-year draw schedule is in the time series, list it as bullets:
 
-| Year | CapEx Draw |
-|---|---|
-| Year 1 | $X |
-| Year 2 | $X |
+- **Year 1:** $X
+- **Year 2:** $X
 
 Then 2-3 sentences explaining the CapEx allocation (deferred maintenance,
 unit renovation, building systems, ground-up construction, etc.).

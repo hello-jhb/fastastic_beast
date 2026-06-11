@@ -91,6 +91,25 @@ st.markdown(
     letter-spacing: 0.06em; color: #6b7280; margin-bottom: 10px;
   }
 
+  /* Hide the chat avatar icons (robot / person) — content only */
+  [data-testid^="stChatMessageAvatar"] { display: none !important; }
+  [data-testid="stChatMessage"] { padding-left: 8px; gap: 0; }
+
+  /* Suggested-prompt chips above the chat box (scoped by container key) */
+  .st-key-dd_chips .stButton button {
+    border-radius: 999px;
+    padding: 2px 14px;
+    font-size: 12px;
+    min-height: 30px;
+    border: 1px solid #99f6e4;
+    background: #f0fdfa;
+    color: #0f766e;
+  }
+  .st-key-dd_chips .stButton button:hover {
+    border-color: #14b8a6;
+    background: #ccfbf1;
+  }
+
   /* Scoped workspace header */
   .ws-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
   .ws-title  { font-size: 22px; font-weight: 600; }
@@ -710,7 +729,8 @@ _REPORT_SYSTEM = (
     "verified facts, the snapshot, and the analyses the user chose to keep. "
     "Memorialize them into one clean, well-structured markdown report. Use ONLY "
     "the content provided — do not invent figures. Keep section headings; tighten "
-    "prose; remove redundancy. This report is the deal's source of truth."
+    "prose; remove redundancy. Present figures as bullet points; NEVER use "
+    "markdown tables. This report is the deal's source of truth."
 )
 
 
@@ -736,25 +756,25 @@ def _render_deal_analyzer(agent: AgentSession) -> None:
 
     left, mid, right = st.columns([1.1, 2.3, 1.5], gap="large")
 
-    # Render the middle FIRST so the editable appendix is captured before the
-    # left column's Proceed button needs it (Streamlit places output by column,
-    # not by execution order, so visual order stays left | mid | right).
+    # Left renders in TWO phases: the upload + extraction progress must run
+    # BEFORE the middle column builds the appendix from the extracted records,
+    # while the Proceed button needs the edited appendix the middle returns.
+    # Streamlit places output by column, so the visual order stays clean.
+    with left:
+        _render_process_inputs(files, batch_id, confirmed)
     with mid:
         gate_edited = _render_outcome_column(agent, batch_id, confirmed, analysis_req)
     with left:
-        _render_process_column(agent, files, batch_id, confirmed, analysis_req, gate_edited)
+        _render_process_actions(agent, batch_id, confirmed, analysis_req, gate_edited)
     with right:
-        _render_chat_column(agent)
+        _render_chat_column(agent, suggestions=confirmed and analysis_req)
 
     with st.expander("📂 SSOT — Asset record (debug)", expanded=False):
         _ssot_panel()
 
 
-def _render_process_column(
-    agent: AgentSession, files, batch_id, confirmed: bool,
-    analysis_req: bool, gate_edited,
-) -> None:
-    """Left column: file upload, progress, and the workflow-advance buttons."""
+def _render_process_inputs(files, batch_id, confirmed: bool) -> None:
+    """Left column, phase 1: upload, extraction progress bar, progress checklist."""
     st.markdown('<div class="da-col-title">Input &amp; analysis</div>', unsafe_allow_html=True)
 
     uploaded = st.file_uploader(
@@ -770,7 +790,11 @@ def _render_process_column(
             st.session_state.uploaded_filenames = current
             st.rerun()
 
-    # Progress checklist
+    # Run the AAM extraction here (pre-confirm) so its progress bar lives in
+    # this box — the middle column then renders from the cached records.
+    if batch_id and not confirmed:
+        _ensure_aam_extracted()
+
     st.markdown("**Progress**")
     steps = [
         ("File uploaded",        bool(files)),
@@ -784,13 +808,19 @@ def _render_process_column(
         st.markdown(f"{'✅' if done else '⬜'} {label}")
     st.divider()
 
+
+def _render_process_actions(
+    agent: AgentSession, batch_id, confirmed: bool,
+    analysis_req: bool, gate_edited,
+) -> None:
+    """Left column, phase 2: the stage-advance buttons (+ ingest progress bar)."""
     if not batch_id:
         st.caption("Upload a workbook to begin.")
         return
 
     if not confirmed:
         st.caption("Verify the facts in the Outcome panel, then:")
-        if st.button("✅ Proceed — confirm facts", type="primary", width="stretch",
+        if st.button("Proceed — confirm facts", type="primary", width="stretch",
                      disabled=gate_edited is None):
             _confirm_aam_and_ingest(
                 agent, _collect_verified(st.session_state.aam_records, gate_edited)
@@ -798,16 +828,12 @@ def _render_process_column(
         return
 
     if not analysis_req:
-        if st.button("📝 Run analysis (Snapshot)", type="primary", width="stretch"):
+        if st.button("Run analysis (Snapshot)", type="primary", width="stretch"):
             st.session_state.aam_analysis_requested.add(batch_id)
             st.rerun()
         return
 
-    # Analysis stage — deep-dive buttons. Results land in Chat, then Add to Outcome.
-    st.caption("Drill into a section — results appear in Chat:")
-    for key, label in _DEEP_DIVE_SPECS:
-        if st.button(label, key=f"dd_{key}", width="stretch"):
-            _run_deep_dive(agent, key, label)
+    st.caption("Pick a suggested analysis in the Chat panel, or ask a question.")
 
 
 def _render_outcome_column(agent: AgentSession, batch_id, confirmed: bool, analysis_req: bool):
@@ -856,29 +882,33 @@ def _render_outcome_column(agent: AgentSession, batch_id, confirmed: bool, analy
 
 
 def _render_aam_summary() -> None:
-    """Locked, verified AAM facts read back from the SSOT (post-confirm)."""
+    """Locked, verified AAM facts read back from the SSOT (post-confirm).
+    Rendered as grouped bullet points — easier to read than a table."""
     import aam
-    import pandas as pd
     from metric_catalog import load_metric_catalog
 
     bm = ((ssot.load_ssot().get("layers", {}) or {})
           .get("underwriting", {}) or {}).get("bounded_metrics", {}) or {}
     name_by_id = {m["metric_id"]: m["metric_name"] for m in load_metric_catalog()}
 
-    rows = []
+    lines: list[str] = []
+    current_group = None
     for mid in aam.AAM_METRIC_IDS:
         rec = bm.get(name_by_id.get(mid, ""))
         if not rec:
             continue
-        rows.append({
-            "Group":  aam.group_of(mid) or "",
-            "Metric": rec.get("metric_name", mid),
-            "Value":  rec.get("display_value") or "—",
-        })
+        display = rec.get("display_value")
+        if display in (None, "", "—"):
+            continue
+        group = aam.group_of(mid) or ""
+        if group != current_group:
+            lines.append(f"\n**{group}**")
+            current_group = group
+        lines.append(f"- {rec.get('metric_name', mid)}: **{display}**")
     with st.container(border=True):
         st.markdown("#### AAM Summary — verified facts")
-        if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        if lines:
+            st.markdown("\n".join(lines))
         else:
             st.caption("No verified AAM facts in the SSOT yet.")
 
@@ -893,13 +923,13 @@ def _ensure_snapshot_generated(agent: AgentSession) -> None:
     with st.spinner("Generating Snapshot…"):
         readiness = tools.check_scenario_ready("deal_review")
         if not readiness.get("ready"):
-            st.warning(readiness.get("reason", "Not enough data for the Snapshot yet."))
+            st.caption(readiness.get("reason", "Not enough data for the Snapshot yet."))
             st.session_state.completed_batches.add(batch_id)
             return
         result = tools.run_deal_review()
     st.session_state.completed_batches.add(batch_id)
     if "error" in result:
-        st.error(f"Couldn't generate the Snapshot: {result['error']}")
+        st.caption(f"Couldn't generate the Snapshot: {result['error']}")
         return
     st.session_state.snapshot_md = result.get("narrative", "")
 
@@ -925,9 +955,9 @@ def _fold_to_outcome(content: str) -> None:
     st.session_state.outcome_added.add(sig)
 
 
-def _render_chat_column(agent: AgentSession) -> None:
-    """Right column: chat transcript with Add-to-Outcome, a chat form, and the
-    Generate Report action that memorializes the Outcome as the SSOT."""
+def _render_chat_column(agent: AgentSession, suggestions: bool = False) -> None:
+    """Right column: chat transcript with Add-to-Outcome, suggested-analysis
+    chips, the chat form, and the Generate Report action."""
     st.markdown('<div class="da-col-title">Chat</div>', unsafe_allow_html=True)
 
     msgs = list(agent.display_messages())
@@ -941,9 +971,23 @@ def _render_chat_column(agent: AgentSession) -> None:
                     sig = _finding_sig(m["content"])
                     if sig in st.session_state.outcome_added:
                         st.caption("✓ in Outcome")
-                    elif st.button("➕ Add to Outcome", key=f"add_{i}_{sig}"):
+                    elif st.button("Add to Outcome", key=f"add_{i}_{sig}"):
                         _fold_to_outcome(m["content"])
                         st.rerun()
+
+    # Suggested-analysis chips (the 5 deep-dives) sit with the prompt box —
+    # pill-styled via the .st-key-dd_chips CSS scope. Results land in the
+    # transcript above, where "Add to Outcome" folds them into the middle.
+    if suggestions:
+        with st.container(key="dd_chips"):
+            st.caption("Suggested analyses")
+            row1 = st.columns(3)
+            row2 = st.columns(3)
+            slots = row1 + row2
+            for i, (key, label) in enumerate(_DEEP_DIVE_SPECS):
+                with slots[i]:
+                    if st.button(label, key=f"dd_{key}"):
+                        _run_deep_dive(agent, key, label)
 
     with st.form("da_chat", clear_on_submit=True):
         txt = st.text_area(
@@ -956,12 +1000,12 @@ def _render_chat_column(agent: AgentSession) -> None:
             with st.spinner("Thinking…"):
                 agent.send(txt.strip())
         except Exception as e:
-            st.error(f"Chat failed: {e}")
+            st.caption(f"Chat failed: {e}")
         st.rerun()
 
     st.divider()
     can_report = bool(st.session_state.snapshot_md or st.session_state.outcome_findings)
-    if st.button("📄 Generate Report → SSOT", width="stretch", disabled=not can_report,
+    if st.button("Generate Report → SSOT", width="stretch", disabled=not can_report,
                  help="Memorialize the Outcome into a report and save it as the SSOT."):
         _generate_report()
         st.rerun()
@@ -1027,9 +1071,9 @@ def _run_deep_dive(agent: AgentSession, key: str, label: str) -> None:
     with st.spinner(f"Generating {label}…"):
         result = run_deep_dive(key)
     if "error" in result:
-        st.error(result["error"])
+        st.caption(result["error"])
         return
-    agent.messages.append({"role": "user",      "content": f"📊 {label}"})
+    agent.messages.append({"role": "user",      "content": label})
     agent.messages.append({"role": "assistant", "content": result["narrative"]})
     st.rerun()
 
@@ -1285,22 +1329,29 @@ def _rederive_noi_from_verified(records: dict, verified: dict) -> None:
 
 def _ensure_aam_extracted() -> dict:
     """Extract the AAM once per batch (deterministic, fast, free) and return the
-    records dict. GPT fires only on the explicit blank-fill action."""
+    records dict. GPT fires only on the explicit blank-fill action. Shows a
+    progress bar + description in the column it's called from (the left box)."""
     batch_id = frozenset(st.session_state.uploaded_filenames)
     if st.session_state.aam_batch_id != batch_id or not st.session_state.aam_records:
         primary = sorted(st.session_state.uploaded_filenames)[0]
-        with st.status(f"Reading audit-appendix metrics from {primary}…", expanded=False):
-            from aam_extractor import extract_aam
-            st.session_state.aam_records = extract_aam(UPLOAD_DIR / primary, use_gpt_gap_fill=False)
-            # Tag flow metrics with their table's periodicity (cached parse).
-            try:
-                from financial_model_parser import parse_workbook_tables_cached, tag_metric_periodicity
-                tag_metric_periodicity(
-                    parse_workbook_tables_cached(UPLOAD_DIR / primary),
-                    st.session_state.aam_records,
-                )
-            except Exception:
-                pass
+        bar = st.progress(5, text="Reading workbook…")
+        note = st.empty()
+        note.caption(f"Mapping sheets and extracting audit-appendix metrics from {primary}.")
+        from aam_extractor import extract_aam
+        st.session_state.aam_records = extract_aam(UPLOAD_DIR / primary, use_gpt_gap_fill=False)
+        bar.progress(70, text="Tagging table periodicity…")
+        note.caption("Detecting model tables so each metric inherits its table's periodicity.")
+        # Tag flow metrics with their table's periodicity (cached parse).
+        try:
+            from financial_model_parser import parse_workbook_tables_cached, tag_metric_periodicity
+            tag_metric_periodicity(
+                parse_workbook_tables_cached(UPLOAD_DIR / primary),
+                st.session_state.aam_records,
+            )
+        except Exception:
+            pass
+        bar.progress(100, text="Audit appendix ready")
+        note.caption("Review and correct the facts in the Outcome panel.")
         st.session_state.aam_batch_id = batch_id
         st.session_state.aam_fill_version = 0
     return st.session_state.aam_records
@@ -1330,7 +1381,7 @@ def _render_aam_appendix(batch_id) -> "pd.DataFrame":
             continue
         source = _aam_source(rec)
         if rec.get("_via_aam_gpt") and source != "—":
-            source = f"🤖 {source}"
+            source = f"{source} (GPT)"
         rows.append({
             "Group":   aam.group_of(mid) or "",
             "Metric":  rec.get("metric_name", mid),
@@ -1364,12 +1415,12 @@ def _render_aam_appendix(batch_id) -> "pd.DataFrame":
     n_blanks = sum(counts.get(s, 0) for s in ("missing", "suspicious"))
     from scenarios._llm import llm_available
     if not llm_available():
-        st.button("🤖 Fill blanks with GPT", disabled=True, width="stretch",
+        st.button("Fill blanks with GPT", disabled=True, width="stretch",
                   help="Set OPENAI_API_KEY to enable GPT blank-fill.")
     elif n_blanks == 0:
-        st.button("🤖 Fill blanks with GPT", disabled=True, width="stretch",
+        st.button("Fill blanks with GPT", disabled=True, width="stretch",
                   help="No blanks to fill — every AAM field resolved.")
-    elif st.button(f"🤖 Fill {n_blanks} blank(s) with GPT", width="stretch"):
+    elif st.button(f"Fill {n_blanks} blank(s) with GPT", width="stretch"):
         _fill_aam_blanks(records)
 
     return edited
@@ -1378,15 +1429,17 @@ def _render_aam_appendix(batch_id) -> "pd.DataFrame":
 def _fill_aam_blanks(records: dict) -> None:
     """Run the focused GPT gap-fill over current AAM blanks, then refresh the table."""
     primary = sorted(st.session_state.uploaded_filenames)[0]
-    with st.status("Filling blanks with a focused GPT read…", expanded=False):
-        from aam_extractor import fill_aam_blanks
-        filled = fill_aam_blanks(UPLOAD_DIR / primary, records)
-        # Re-tag periodicity so newly-filled flow metrics inherit it too (cached).
-        try:
-            from financial_model_parser import parse_workbook_tables_cached, tag_metric_periodicity
-            tag_metric_periodicity(parse_workbook_tables_cached(UPLOAD_DIR / primary), records)
-        except Exception:
-            pass
+    bar = st.progress(20, text="Filling blanks with a focused GPT read…")
+    from aam_extractor import fill_aam_blanks
+    filled = fill_aam_blanks(UPLOAD_DIR / primary, records)
+    bar.progress(80, text="Re-tagging table periodicity…")
+    # Re-tag periodicity so newly-filled flow metrics inherit it too (cached).
+    try:
+        from financial_model_parser import parse_workbook_tables_cached, tag_metric_periodicity
+        tag_metric_periodicity(parse_workbook_tables_cached(UPLOAD_DIR / primary), records)
+    except Exception:
+        pass
+    bar.progress(100, text=f"GPT filled {filled} field(s)")
     st.session_state.aam_records = records
     st.session_state.aam_fill_version += 1  # force the editor to rebuild
     st.toast(f"GPT filled {filled} field(s) — review before confirming.")
@@ -1394,77 +1447,82 @@ def _fill_aam_blanks(records: dict) -> None:
 
 
 def _confirm_aam_and_ingest(agent: AgentSession, verified: dict) -> None:
-    """Confirm handler: run the full ingest, apply verified values, unlock analysis."""
+    """Confirm handler: run the full ingest, apply verified values, unlock
+    analysis. Renders a progress bar + step description in the column it's
+    invoked from (the left process box)."""
     batch_id = frozenset(st.session_state.uploaded_filenames)
     files = sorted(st.session_state.uploaded_filenames)
 
-    with st.chat_message("user"):
-        st.markdown("Uploaded: " + ", ".join(files))
-    with st.chat_message("assistant"):
-        with st.status("Confirmed — ingesting and applying verified values…", expanded=True) as status:
-            for fn in files:
-                status.update(label=f"Ingesting {fn}…")
-                result = tools.ingest_to_ssot_with_layer(fn, "underwriting")
-                if "error" in result:
-                    st.markdown(f"❌ **{fn}** — {result['error']}")
-                else:
-                    st.markdown(f"✅ **{fn}** → `underwriting` ({result['metric_count']} metrics)")
-            if verified:
-                # Re-derive NOI from the human-verified pricing inputs (the cap /
-                # price / exit value may have been corrected at the gate) before
-                # persisting, so NOI always reflects the confirmed pricing.
-                _rederive_noi_from_verified(st.session_state.aam_records, verified)
-                ssot.apply_verified_aam("underwriting", verified)
-                st.markdown(f"📌 Applied **{len(verified)}** human-verified value(s).")
-                # NOTE: learning-capture (override → observation → candidate) is
-                # UNHOOKED. To re-enable, restore the record_observation /
-                # synthesize_candidates loop here over `verified` corrected entries
-                # (helpers in knowledge_store.py are intact). Reading active
-                # patterns into prompts is independent and remains on.
+    bar = st.progress(5, text="Ingesting workbook…")
+    note = st.empty()
 
-            # Stage 2: trace formulas out from the verified anchors to reach
-            # related (non-AAM) metrics. Additive enrichment — never blocks.
-            try:
-                status.update(label="Tracing formulas from verified cells…")
-                from formula_tracer import trace_from_verified, FORMULA_TRACER_VERSION
-                anchors = {
-                    n: r for n, r in st.session_state.aam_records.items()
-                    if r.get("status") != "missing"
-                }
-                trace = trace_from_verified(UPLOAD_DIR / files[0], anchors)
-                trace["version"] = FORMULA_TRACER_VERSION
-                ssot.attach_formula_trace("underwriting", trace)
-                # Fold traced metrics into bounded_metrics so the snapshot AND
-                # deep-dives use them (fill-only; never clobbers verified facts).
-                _, n_merged = ssot.merge_traced_metrics("underwriting", trace)
-                n_reached = len(trace.get("reached_metrics", {}))
-                if n_reached:
-                    st.markdown(
-                        f"🔗 Traced **{n_reached}** related metric(s) from verified cells "
-                        f"({n_merged} filled gaps in the checklist)."
-                    )
-            except Exception as e:
-                st.caption(f"(Formula trace skipped: {e})")
+    for i, fn in enumerate(files):
+        bar.progress(5 + int(30 * (i / max(len(files), 1))), text=f"Ingesting {fn}…")
+        note.caption(f"Classifying sheets and extracting the full metric checklist from {fn}.")
+        result = tools.ingest_to_ssot_with_layer(fn, "underwriting")
+        if "error" in result:
+            note.caption(f"{fn}: {result['error']}")
+        else:
+            note.caption(f"{fn} → underwriting layer ({result['metric_count']} metrics).")
 
-            # Table-centric parse: detect model tables + tag each metric with its
-            # table's periodicity (so NOI etc. inherit monthly/annual, not guessed).
-            try:
-                status.update(label="Reading model tables (periodicity)…")
-                from financial_model_parser import parse_workbook_tables_cached, MODEL_PARSER_VERSION
-                tables = parse_workbook_tables_cached(UPLOAD_DIR / files[0])
-                _, n_tagged = ssot.attach_model_tables(
-                    "underwriting", tables, version=MODEL_PARSER_VERSION
-                )
-                if tables:
-                    st.markdown(
-                        f"📐 Parsed **{len(tables)}** model table(s); tagged "
-                        f"**{n_tagged}** metric(s) with table periodicity."
-                    )
-            except Exception as e:
-                st.caption(f"(Model-table parse skipped: {e})")
+    if verified:
+        bar.progress(40, text="Applying verified facts…")
+        # Re-derive NOI from the human-verified pricing inputs (the cap / price /
+        # exit value may have been corrected at the gate) before persisting, so
+        # NOI always reflects the confirmed pricing.
+        _rederive_noi_from_verified(st.session_state.aam_records, verified)
+        ssot.apply_verified_aam("underwriting", verified)
+        note.caption(f"Applied {len(verified)} human-verified value(s) — your confirmations win.")
+        # NOTE: learning-capture (override → observation → candidate) is
+        # UNHOOKED. To re-enable, restore the record_observation /
+        # synthesize_candidates loop here over `verified` corrected entries
+        # (helpers in knowledge_store.py are intact). Reading active
+        # patterns into prompts is independent and remains on.
 
-            status.update(label="Verified, ingested & traced", state="complete")
+    # Stage 2: trace formulas out from the verified anchors to reach related
+    # (non-AAM) metrics. Additive enrichment — never blocks.
+    try:
+        bar.progress(60, text="Tracing formulas from verified cells…")
+        note.caption("Following the model's own formula references outward from the verified anchors.")
+        from formula_tracer import trace_from_verified, FORMULA_TRACER_VERSION
+        anchors = {
+            n: r for n, r in st.session_state.aam_records.items()
+            if r.get("status") != "missing"
+        }
+        trace = trace_from_verified(UPLOAD_DIR / files[0], anchors)
+        trace["version"] = FORMULA_TRACER_VERSION
+        ssot.attach_formula_trace("underwriting", trace)
+        # Fold traced metrics into bounded_metrics so the snapshot AND
+        # deep-dives use them (fill-only; never clobbers verified facts).
+        _, n_merged = ssot.merge_traced_metrics("underwriting", trace)
+        n_reached = len(trace.get("reached_metrics", {}))
+        if n_reached:
+            note.caption(
+                f"Traced {n_reached} related metric(s) from verified cells "
+                f"({n_merged} checklist gaps filled)."
+            )
+    except Exception as e:
+        note.caption(f"Formula trace skipped: {e}")
 
+    # Table-centric parse: detect model tables + tag each metric with its
+    # table's periodicity (so NOI etc. inherit monthly/annual, not guessed).
+    try:
+        bar.progress(85, text="Reading model tables…")
+        note.caption("Detecting model tables and tagging metrics with their table's periodicity.")
+        from financial_model_parser import parse_workbook_tables_cached, MODEL_PARSER_VERSION
+        tables = parse_workbook_tables_cached(UPLOAD_DIR / files[0])
+        _, n_tagged = ssot.attach_model_tables(
+            "underwriting", tables, version=MODEL_PARSER_VERSION
+        )
+        if tables:
+            note.caption(
+                f"Parsed {len(tables)} model table(s); tagged {n_tagged} "
+                f"metric(s) with table periodicity."
+            )
+    except Exception as e:
+        note.caption(f"Model-table parse skipped: {e}")
+
+    bar.progress(100, text="Verified, ingested & traced")
     st.session_state.aam_confirmed_batches.add(batch_id)
     st.rerun()
 

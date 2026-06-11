@@ -1,0 +1,4 @@
+[theme]
+# Aqua green replaces Streamlit's default red for all primary elements
+# (Send button, primary buttons, focus rings, progress bars, links).
+primaryColor = "#14b8a6"

@@ -132,6 +132,9 @@ Behavior rules:
   result as annualized from monthly data.
 - If you are unsure whether values are monthly or annual, read the column
   headers before answering.
+- FORMATTING: present figures as concise bullet points ("- **Label:** value
+  (Sheet!Cell)"). NEVER use markdown tables — they render poorly in this app's
+  narrow chat panel.
 """,
     },
     "perf_vs_plan": {
